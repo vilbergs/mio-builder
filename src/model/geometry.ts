@@ -186,7 +186,25 @@ export const ROOM_PRESETS: Record<string, { name: string; pts: Pt[] }> = {
   rect: { name: 'Rectangle', pts: [{ x: 0, y: 0 }, { x: 520, y: 0 }, { x: 520, y: 420 }, { x: 0, y: 420 }] },
   L: { name: 'L-shape', pts: [{ x: 0, y: 0 }, { x: 600, y: 0 }, { x: 600, y: 300 }, { x: 360, y: 300 }, { x: 360, y: 520 }, { x: 0, y: 520 }] },
   U: { name: 'U-shape', pts: [{ x: 0, y: 0 }, { x: 220, y: 0 }, { x: 220, y: 160 }, { x: 460, y: 160 }, { x: 460, y: 0 }, { x: 680, y: 0 }, { x: 680, y: 480 }, { x: 0, y: 480 }] },
+  alcove: { name: 'Alcove', pts: [{ x: 300, y: 0 }, { x: 500, y: 0 }, { x: 500, y: 200 }, { x: 800, y: 200 }, { x: 800, y: 600 }, { x: 0, y: 600 }, { x: 0, y: 200 }, { x: 300, y: 200 }] },
   T: { name: 'T-shape', pts: [{ x: 0, y: 0 }, { x: 700, y: 0 }, { x: 700, y: 260 }, { x: 500, y: 260 }, { x: 500, y: 560 }, { x: 200, y: 560 }, { x: 200, y: 260 }, { x: 0, y: 260 }] },
+}
+
+/**
+ * The inside corner a couch fits best: a convex corner with one wall running east and one running south from it,
+ * picked by the shorter of the two walls. Returns the corner and both wall lengths.
+ */
+export function cornerAnchor(pts: Pt[]): { at: Pt; east: number; south: number } | null {
+  let best: { at: Pt; east: number; south: number } | null = null
+  pts.forEach((p, i) => {
+    const nb = [pts[(i - 1 + pts.length) % pts.length], pts[(i + 1) % pts.length]]
+    const e = nb.find((q) => q.y === p.y && q.x > p.x)
+    const s = nb.find((q) => q.x === p.x && q.y > p.y)
+    if (!e || !s || !pointInPolygon({ x: p.x + 1, y: p.y + 1 }, pts)) return
+    const c = { at: p, east: e.x - p.x, south: s.y - p.y }
+    if (!best || Math.min(c.east, c.south) > Math.min(best.east, best.south)) best = c
+  })
+  return best
 }
 
 // ---------- placement checks and snapping ----------

@@ -1,11 +1,12 @@
 import { useRef, useState } from 'react'
-import { useStore, moduleIssues, type Design } from '../store'
+import { useStore, moduleIssues, selectionBounds, placeLayout, type Design } from '../store'
+import { FURNITURE_BY_ID, itemFootprint } from '../data/furniture'
 import { MODULE_BY_ID, FABRICS, ROSSI, FABRIC_GROUPS } from '../data/modules'
 import { quote, currentPrice, saleActive, kr } from '../model/pricing'
-import { PRESETS } from '../data/presets'
+import { PRESETS, CORNER_LAYOUTS } from '../data/presets'
 import { hasPhotos } from '../data/photos'
 import { ModuleImage } from './Palette'
-import { footprint, boundsOf, walls, setWallLength, addNotch, alignWall, normalizeRoom, polygonArea, ROOM_PRESETS, isValidRoom } from '../model/geometry'
+import { footprint, boundsOf, type Placed, walls, setWallLength, addNotch, alignWall, normalizeRoom, polygonArea, ROOM_PRESETS, isValidRoom } from '../model/geometry'
 
 const sale = saleActive()
 
@@ -34,14 +35,65 @@ function NumberField({ label, value, onCommit, min = 1, step = 1 }: { label: str
   )
 }
 
+function ItemPanel({ uid }: { uid: string }) {
+  const s = useStore()
+  const it = s.items.find((x) => x.uid === uid)!
+  const bad = moduleIssues(s.modules, s.room, s.openings, s.items).has(uid)
+  const b = itemFootprint(it)
+  const def = FURNITURE_BY_ID[it.type]
+  // Resizing keeps the top-left corner in place, so a cabinet against a wall stays against it.
+  const resize = (patch: Partial<Pick<typeof it, 'w' | 'd'>>) => {
+    const nb = itemFootprint({ ...it, ...patch })
+    s.updateItem(uid, { ...patch, x: it.x + (b.x0 - nb.x0), y: it.y + (b.y0 - nb.y0) })
+  }
+  return (
+    <section>
+      <label className="field">
+        <span>Name</span>
+        <input type="text" key={it.name} defaultValue={it.name} maxLength={60}
+          onBlur={(e) => { const v = e.target.value.trim(); if (v && v !== it.name) s.updateItem(uid, { name: v }); else e.target.value = it.name }}
+          onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }} />
+      </label>
+      {def && def.name !== it.name && <p className="sv">{def.name}</p>}
+      <div className="row three">
+        <NumberField label="Width (cm)" value={it.w} onCommit={(v) => resize({ w: v })} />
+        <NumberField label="Depth (cm)" value={it.d} onCommit={(v) => resize({ d: v })} />
+        <NumberField label="Height (cm)" value={it.h} onCommit={(v) => s.updateItem(uid, { h: v })} />
+      </div>
+      <label className="field colour-field">
+        <span>Colour</span>
+        <input type="color" key={it.color} defaultValue={it.color} onBlur={(e) => { if (e.target.value !== it.color) s.updateItem(uid, { color: e.target.value }) }}
+          onChange={(e) => useStore.setState({ items: s.items.map((x) => (x.uid === uid ? { ...x, color: e.target.value } : x)) })} />
+      </label>
+      {bad && <p className="warn">{def?.shape === 'rug' ? 'Sticks through a wall.' : 'Overlaps the couch, other furniture, a wall or a door swing.'}</p>}
+      <div className="row">
+        <NumberField label="Left edge (cm)" value={b.x0} min={-10000} onCommit={(v) => s.nudge(v - b.x0, 0)} />
+        <NumberField label="Top edge (cm)" value={b.y0} min={-10000} onCommit={(v) => s.nudge(0, v - b.y0)} />
+      </div>
+      <div className="btns">
+        <button onClick={() => s.rotateSelection(-1)} title="Rotate anticlockwise (Shift+R)">⟲ Rotate</button>
+        <button onClick={() => s.rotateSelection(1)} title="Rotate clockwise (R)">⟳ Rotate</button>
+        <button onClick={() => s.duplicateSelection()} title="Duplicate (Ctrl+D)">Duplicate</button>
+        <button className="danger" onClick={() => s.removeSelection()} title="Delete (Del)">Delete</button>
+      </div>
+      <p className="hint small">The darker edge or the backrest marks the front. Chairs may tuck under tables and rugs go under everything.</p>
+      <button className="link" onClick={() => s.clearSelection()}>← Back to summary</button>
+    </section>
+  )
+}
+
 function SelectionPanel() {
   const s = useStore()
-  const issues = moduleIssues(s.modules, s.room, s.openings)
+  const issues = moduleIssues(s.modules, s.room, s.openings, s.items)
   const group = s.modules.filter((m) => s.selected.includes(m.uid))
-  const b = boundsOf(group.map(footprint))!
-  const one = group.length === 1 ? group[0] : null
+  const items = s.items.filter((it) => s.selected.includes(it.uid))
+  const b = selectionBounds(s, s.selected)
+  if (!b) return null
+  if (items.length === 1 && !group.length) return <ItemPanel uid={items[0].uid} />
+  const one = group.length === 1 && !items.length ? group[0] : null
   const def = one ? MODULE_BY_ID[one.defId] : null
   const moveTo = (dx: number, dy: number) => s.nudge(dx, dy)
+  const count = group.length + items.length
   return (
     <section>
       {def ? (
@@ -63,7 +115,7 @@ function SelectionPanel() {
         </>
       ) : (
         <>
-          <h2>{group.length} modules selected</h2>
+          <h2>{items.length ? `${count} pieces selected` : `${count} modules selected`}</h2>
           <table className="specs">
             <tbody>
               <tr><td>Width</td><td>{Math.round(b.x1 - b.x0)} cm</td></tr>
@@ -72,7 +124,7 @@ function SelectionPanel() {
           </table>
         </>
       )}
-      {group.some((m) => issues.has(m.uid)) && <p className="warn">Overlaps another module, a wall or a door swing.</p>}
+      {[...group, ...items].some((m) => issues.has(m.uid)) && <p className="warn">Overlaps another piece, a wall or a door swing.</p>}
       <div className="row">
         <NumberField label="Left edge (cm)" value={b.x0} min={-10000} onCommit={(v) => moveTo(v - b.x0, 0)} />
         <NumberField label="Top edge (cm)" value={b.y0} min={-10000} onCommit={(v) => moveTo(0, v - b.y0)} />
@@ -88,6 +140,49 @@ function SelectionPanel() {
       <p className="hint small">Shift-click to add or remove modules from the selection. Ctrl+A selects the whole couch.</p>
       <button className="link" onClick={() => s.clearSelection()}>← Back to summary</button>
     </section>
+  )
+}
+
+function LayoutThumb({ modules }: { modules: Placed[] }) {
+  const b = boundsOf(modules.map(footprint))!
+  const pad = 6
+  return (
+    <svg viewBox={`${b.x0 - pad} ${b.y0 - pad} ${b.x1 - b.x0 + pad * 2} ${b.y1 - b.y0 + pad * 2}`} className="layout-thumb">
+      <path d={`M${b.x1 + pad} ${b.y0 - 3}H${b.x0 - 3}V${b.y1 + pad}`} className="layout-wall" />
+      {modules.map((m) => {
+        const r = footprint(m)
+        return <rect key={m.uid} x={r.x0 + 1} y={r.y0 + 1} width={r.x1 - r.x0 - 2} height={r.y1 - r.y0 - 2} rx={4} className={MODULE_BY_ID[m.defId].kind === 'footstool' ? 'layout-foot' : 'layout-mod'} />
+      })}
+    </svg>
+  )
+}
+
+function CornerLayouts() {
+  const s = useStore()
+  const fits = CORNER_LAYOUTS.flatMap((l) => {
+    const placed = placeLayout(l, s.room, s.openings)
+    return placed ? [{ l, placed }] : []
+  })
+  if (!fits.length) return null
+  return (
+    <>
+      <h3>Layouts for the corner</h3>
+      <p className="hint small">Combinations that fit the room's main corner with their backs against the walls. Picking one replaces the couch; Ctrl+Z brings the old one back.</p>
+      <div className="presets layouts">
+        {fits.map(({ l, placed }) => {
+          const b = boundsOf(placed.map(footprint))!
+          const q = quote(placed.map((m) => m.defId), s.fabricGroup, sale)
+          return (
+            <button key={l.id} onClick={() => s.applyLayout(l.id)} title={l.note}>
+              <LayoutThumb modules={placed} />
+              <span>{l.name}</span>
+              <em>{Math.round(b.x1 - b.x0)} × {Math.round(b.y1 - b.y0)} · {kr(q.now)}{q.preset ? ' · Mio package' : ''}</em>
+              <em>{l.note}</em>
+            </button>
+          )
+        })}
+      </div>
+    </>
   )
 }
 
@@ -119,7 +214,7 @@ function PriceBox() {
 
 function CouchPanel() {
   const s = useStore()
-  const issues = moduleIssues(s.modules, s.room, s.openings)
+  const issues = moduleIssues(s.modules, s.room, s.openings, s.items)
   const sofa = s.modules.filter((m) => MODULE_BY_ID[m.defId].kind !== 'footstool')
   const b = boundsOf(sofa.map(footprint))
   const seats = sofa.reduce((n, m) => n + MODULE_BY_ID[m.defId].seats, 0)
@@ -164,9 +259,10 @@ function CouchPanel() {
               }
             }}>{copied ? 'Copied ✓' : 'Copy parts list'}</button>
           </div>
-          {issues.size > 0 && <p className="warn">{issues.size} module{issues.size > 1 ? 's' : ''} overlap, stick through a wall or block a door (shown in red).</p>}
+          {issues.size > 0 && <p className="warn">{issues.size} piece{issues.size > 1 ? 's' : ''} overlap, stick through a wall or block a door (shown in red).</p>}
         </>
       )}
+      <CornerLayouts />
       <h3>Mio's ready-made sofas</h3>
       <div className="presets">
         {PRESETS.map((p) => (
@@ -309,7 +405,7 @@ function FilePanel() {
   const file = useRef<HTMLInputElement>(null)
   const [confirmClear, setConfirmClear] = useState(false)
   const exportJson = () => {
-    const d: Design = { room: s.room, openings: s.openings, wallHeight: s.wallHeight, modules: s.modules, armStyle: s.armStyle, fabric: s.fabric }
+    const d: Design = { room: s.room, openings: s.openings, wallHeight: s.wallHeight, modules: s.modules, items: s.items, armStyle: s.armStyle, fabric: s.fabric }
     s.set({ exportPreview: { kind: 'text', data: JSON.stringify(d, null, 2), name: 'rossi-design.json', title: 'Design file' } })
   }
   return (

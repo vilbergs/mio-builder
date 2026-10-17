@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import rough from 'roughjs'
-import { useStore, moduleIssues, type Design } from '../store'
+import { useStore, moduleIssues, selectionBounds, type Design } from '../store'
 import { MODULE_BY_ID } from '../data/modules'
+import { FURNITURE_BY_ID, itemFootprint, itemParts2D, itemToPlan, shapeOf, type Item, type ItemPart } from '../data/furniture'
 import { moduleParts, pillowParts, type Part } from '../model/parts'
 import {
-  footprint, localToPlan, walls, moveWall, normalizeRoom, openingEnds, fitOpening, type Opening, snapCenter, snapGroupDelta, boundsOf, polygonArea, isValidRoom, wallClearance,
+  footprint, localToPlan, walls, moveWall, normalizeRoom, openingEnds, fitOpening, type Opening, snapCenter, boundsOf, polygonArea, isValidRoom, wallClearance,
   type Placed, type Pt, type Rect,
 } from '../model/geometry'
 import { shade } from '../model/color'
@@ -14,7 +15,7 @@ const WALL_T = 12
 const gen = rough.generator()
 
 type Drag =
-  | { kind: 'module'; start: Pt; base: Placed[]; moved: boolean; future: Design[] }
+  | { kind: 'module'; start: Pt; base: Placed[]; items: Item[]; moved: boolean; future: Design[] }
   | { kind: 'wall'; i: number; start: Pt; base: Pt[] }
   | { kind: 'pan'; sx: number; sy: number; vb: VB }
   | { kind: 'pinch'; dist: number; mid: Pt; vb: VB }
@@ -39,6 +40,12 @@ function partRect(m: Placed, p: Part): Rect {
   return { x0: Math.min(a.x, b.x), y0: Math.min(a.y, b.y), x1: Math.max(a.x, b.x), y1: Math.max(a.y, b.y) }
 }
 
+function itemPartRect(it: Item, p: ItemPart): Rect {
+  const a = itemToPlan(it, p.x0, p.y0)
+  const b = itemToPlan(it, p.x1, p.y1)
+  return { x0: Math.min(a.x, b.x), y0: Math.min(a.y, b.y), x1: Math.max(a.x, b.x), y1: Math.max(a.y, b.y) }
+}
+
 function roughPaths(d: ReturnType<typeof gen.rectangle>, key: string) {
   return gen.toPaths(d).map((p, i) => (
     <path key={key + i} d={p.d} stroke={p.stroke} strokeWidth={p.strokeWidth} fill={p.fill ?? 'none'} />
@@ -52,7 +59,7 @@ export function Plan2D() {
   const [drag, setDrag] = useState<Drag | null>(null)
   const [hoverWall, setHoverWall] = useState<number | null>(null)
   const sketch = s.style === 'sketch'
-  const issues = useMemo(() => moduleIssues(s.modules, s.room, s.openings), [s.modules, s.room, s.openings])
+  const issues = useMemo(() => moduleIssues(s.modules, s.room, s.openings, s.items), [s.modules, s.room, s.openings, s.items])
   const ws = useMemo(() => walls(s.room), [s.room])
 
   // Fit the room on first render and when the room changes shape a lot.
@@ -113,16 +120,16 @@ export function Plan2D() {
     setVb({ x: p.x - (p.x - vb.x) * f, y: p.y - (p.y - vb.y) * f, w, h: vb.h * f })
   }
 
-  const startModule = (e: React.PointerEvent, m: Placed) => {
+  const startPiece = (e: React.PointerEvent, id: string) => {
     if (s.edit !== 'couch') return
     e.stopPropagation()
     ;(e.target as Element).setPointerCapture?.(e.pointerId)
     const additive = e.shiftKey || e.ctrlKey || e.metaKey
-    s.select(m.uid, additive)
+    s.select(id, additive)
     s.set({ selectedWall: null })
     const sel = new Set(useStore.getState().selected)
-    if (!sel.has(m.uid)) return
-    setDrag({ kind: 'module', start: toPlan(e), base: s.modules.filter((x) => sel.has(x.uid)), moved: false, future: s.future })
+    if (!sel.has(id)) return
+    setDrag({ kind: 'module', start: toPlan(e), base: s.modules.filter((x) => sel.has(x.uid)), items: s.items.filter((x) => sel.has(x.uid)), moved: false, future: s.future })
     s.snapshot()
   }
 
@@ -197,11 +204,7 @@ export function Plan2D() {
       return
     }
     if (drag.kind === 'module') {
-      const ids = new Set(drag.base.map((m) => m.uid))
-      const others = s.modules.filter((x) => !ids.has(x.uid)).map(footprint)
-      const d = snapGroupDelta(drag.base.map(footprint), { x: p.x - drag.start.x, y: p.y - drag.start.y }, others, s.room, 10 * pxToCm())
-      const moved = new Map(drag.base.map((m) => [m.uid, { ...m, x: Math.round((m.x + d.x) * 2) / 2, y: Math.round((m.y + d.y) * 2) / 2 }]))
-      s.setModules(s.modules.map((m) => moved.get(m.uid) ?? m), false)
+      s.dragPieces({ modules: drag.base, items: drag.items }, { x: p.x - drag.start.x, y: p.y - drag.start.y }, 10 * pxToCm())
       if (!drag.moved) setDrag({ ...drag, moved: true })
     } else if (drag.kind === 'wall') {
       const w = walls(drag.base)[drag.i]
@@ -243,12 +246,20 @@ export function Plan2D() {
   }
 
   const onDrop = (e: React.DragEvent) => {
+    const type = e.dataTransfer.getData('text/rossi-item')
+    const fdef = FURNITURE_BY_ID[type]
+    if (fdef) {
+      e.preventDefault()
+      const others = [...s.modules.map(footprint), ...s.items.map(itemFootprint)]
+      s.addItem(type, snapCenter({ w: fdef.width, h: fdef.depth }, toPlan(e), others, s.room, 12 * pxToCm()))
+      return
+    }
     const defId = e.dataTransfer.getData('text/rossi-module')
     if (!defId || !MODULE_BY_ID[defId]) return
     e.preventDefault()
     const p = toPlan(e)
     const def = MODULE_BY_ID[defId]
-    const c = snapCenter({ w: def.width, h: def.depth }, p, s.modules.map(footprint), s.room, 12 * pxToCm())
+    const c = snapCenter({ w: def.width, h: def.depth }, p, [...s.modules.map(footprint), ...s.items.map(itemFootprint)], s.room, 12 * pxToCm())
     s.addModule(defId, c)
   }
 
@@ -291,7 +302,7 @@ export function Plan2D() {
     const bad = issues.has(m.uid)
     const seed = seedOf(m.uid)
     return (
-      <g key={m.uid} onPointerDown={(e) => startModule(e, m)} style={{ cursor: s.edit === 'couch' ? 'grab' : 'default' }}>
+      <g key={m.uid} onPointerDown={(e) => startPiece(e, m.uid)} style={{ cursor: s.edit === 'couch' ? 'grab' : 'default' }}>
         {sketch ? (
           <>
             <rect x={r.x0} y={r.y0} width={r.x1 - r.x0} height={r.y1 - r.y0} fill="#fffdf7" />
@@ -338,6 +349,53 @@ export function Plan2D() {
     )
   }
 
+  const renderItem = (it: Item) => {
+    const r = itemFootprint(it)
+    const sel = s.selected.includes(it.uid)
+    const bad = issues.has(it.uid)
+    const seed = seedOf(it.uid)
+    const rug = shapeOf(it) === 'rug'
+    const parts = itemParts2D(it)
+    const line = shade(it.color, -0.45)
+    const cx = (r.x0 + r.x1) / 2, cy = (r.y0 + r.y1) / 2
+    const label = Math.min(r.x1 - r.x0, r.y1 - r.y0) > 30 ? it.name : null
+    return (
+      <g key={it.uid} onPointerDown={(e) => startPiece(e, it.uid)} style={{ cursor: s.edit === 'couch' ? 'grab' : 'default' }}>
+        {!sketch && !rug && <rect x={r.x0 + 2} y={r.y0 + 3} width={r.x1 - r.x0} height={r.y1 - r.y0} rx={4} fill="rgba(0,0,0,0.18)" filter="url(#soft)" />}
+        {parts.map((p, i) => {
+          const pr = itemPartRect(it, p)
+          const w = pr.x1 - pr.x0, h = pr.y1 - pr.y0
+          if (sketch) {
+            const opts = {
+              seed: seed + i, roughness: 1, bowing: 0.6, stroke: bad ? '#c0392b' : ink, strokeWidth: (p.dashed ? 0.7 : 1) * k,
+              strokeLineDash: p.dashed ? [4 * k, 3 * k] : undefined,
+              fill: i === 0 && !rug ? '#fffdf7' : p.tone < -0.15 ? '#8a8578' : undefined,
+              fillStyle: i === 0 ? 'solid' : 'hachure', hachureGap: 6 * k, fillWeight: 0.6 * k, hachureAngle: -40,
+            }
+            const d = p.kind === 'ellipse' ? gen.ellipse(pr.x0 + w / 2, pr.y0 + h / 2, w, h, opts) : gen.rectangle(pr.x0, pr.y0, w, h, opts)
+            return <g key={i}>{roughPaths(d, `${it.uid}-${i}`)}</g>
+          }
+          const fill = shade(it.color, p.tone)
+          const props = { fill: p.dashed ? 'none' : fill, stroke: p.dashed ? line : i === 0 ? line : 'none', strokeWidth: (p.dashed ? 0.8 : 0.6) * k, strokeDasharray: p.dashed ? `${4 * k} ${3 * k}` : undefined }
+          return p.kind === 'ellipse'
+            ? <ellipse key={i} cx={pr.x0 + w / 2} cy={pr.y0 + h / 2} rx={w / 2} ry={h / 2} {...props} />
+            : <rect key={i} x={pr.x0} y={pr.y0} width={w} height={h} rx={p.r ?? 2} {...props} />
+        })}
+        {bad && !sketch && <rect x={r.x0} y={r.y0} width={r.x1 - r.x0} height={r.y1 - r.y0} fill="rgba(220,40,40,0.25)" stroke="#d33" strokeWidth={1.5 * k} />}
+        {sel && (
+          <rect x={r.x0 - 3 * k} y={r.y0 - 3 * k} width={r.x1 - r.x0 + 6 * k} height={r.y1 - r.y0 + 6 * k}
+            fill="none" stroke="#2f6fed" strokeWidth={2 * k} strokeDasharray={`${6 * k} ${4 * k}`} rx={3} />
+        )}
+        {(label || (sel && s.selected.length === 1)) && (
+          <text x={cx} y={cy} textAnchor="middle" fontSize={fontSize * 0.9} className="plan-label item-label" pointerEvents="none">
+            {label && <tspan x={cx} dy={sel && s.selected.length === 1 ? '-0.2em' : '0.35em'}>{label}</tspan>}
+            {sel && s.selected.length === 1 && <tspan x={cx} dy={label ? '1.2em' : '0.35em'}>{it.w} × {it.d}</tspan>}
+          </text>
+        )}
+      </g>
+    )
+  }
+
   const dimLine = (a: Pt, b: Pt, label: string, off: Pt, key: string) => {
     const A = { x: a.x + off.x, y: a.y + off.y }
     const B = { x: b.x + off.x, y: b.y + off.y }
@@ -364,7 +422,7 @@ export function Plan2D() {
       : { pointerEvents: 'none' as const }
 
   const area = Math.abs(polygonArea(s.room)) / 10000
-  const selBounds = boundsOf(s.modules.filter((m) => s.selected.includes(m.uid)).map(footprint))
+  const selBounds = selectionBounds(s, s.selected)
   const clearance: { key: string; a: Pt; b: Pt; label: string; vertical: boolean }[] = []
   if (selBounds) {
     const c = wallClearance(selBounds, s.room)
@@ -470,7 +528,12 @@ export function Plan2D() {
         {/* wall lengths */}
         {ws.map((w) => dimLine(w.a, w.b, `${Math.round(w.length)}`, { x: -w.inward.x * (WALL_T + 22 * k), y: -w.inward.y * (WALL_T + 22 * k) }, 'w' + w.i))}
 
-        <g opacity={s.edit === 'room' ? 0.45 : 1}>{s.modules.map(renderModule)}</g>
+        <g opacity={s.edit === 'room' ? 0.45 : 1}>
+          {/* Rugs lie under everything; table tops cover the chairs tucked under them. */}
+          {(['rug', 'chair'] as const).map((sh) => s.items.filter((it) => shapeOf(it) === sh).map(renderItem))}
+          {s.items.filter((it) => shapeOf(it) !== 'rug' && shapeOf(it) !== 'chair').map(renderItem)}
+          {s.modules.map(renderModule)}
+        </g>
 
         {selBounds && s.edit === 'couch' && (
           <g pointerEvents="none">

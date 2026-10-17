@@ -81,3 +81,50 @@ export function matchPreset(defIds: string[]): Preset | null {
   const k = key(defIds)
   return PRESETS.find((p) => key(p.modules.map((m) => m.defId)) === k) ?? null
 }
+
+/**
+ * Couches built for a room corner, in corner coordinates: the corner is at (0, 0), one wall runs east along y = 0 and the
+ * other south along x = 0. Rotation 270 puts a module's back against the west wall; its "left" end is then the south end.
+ */
+export interface CornerLayout {
+  id: string
+  name: string
+  note: string
+  modules: Omit<Placed, 'uid'>[]
+}
+
+export const CORNER_LAYOUTS: CornerLayout[] = [
+  {
+    id: 'chaise-xl-left', name: 'Chaise XL on the left', note: 'Back on the north wall, chaise along the west wall',
+    modules: [at('chaise-left', 0, 0), at('s2-right', 142, 0)],
+  },
+  {
+    id: 'chaise-left', name: 'Compact chaise on the left', note: 'Same idea with the narrower chaise, 20 cm shorter',
+    modules: [at('chaisesm-left', 0, 0), at('s2-right', 122, 0)],
+  },
+  {
+    id: 'chaise-xl-west', name: 'Chaise XL along the north wall', note: 'Back on the west wall, chaise against the north wall',
+    modules: [at('chaise-right', 0, 0, 270), at('s2-left', 0, 142, 270)],
+  },
+  {
+    id: 'chaise3-west', name: '3-seat with chaise along the north wall', note: 'Back on the west wall, leaves 50 cm to the south wall',
+    modules: [at('chaisesm-right', 0, 0, 270), at('s15-none', 0, 122, 270), at('s15-left', 0, 228, 270)],
+  },
+  {
+    // Seats are 2 cm deeper than the corner, so the west run starts 2 cm below it to stay clear of the north run.
+    id: 'corner-2-2', name: 'Corner sofa 2 + 2', note: 'Corner module in the corner, two seats each way',
+    modules: [at('corner', 0, 0), at('s2-right', 110, 0), at('s2-left', 0, 112, 270)],
+  },
+  {
+    id: 'corner-2-3', name: 'Corner sofa 2 + 3', note: 'Longer run down the west wall',
+    modules: [at('corner', 0, 0), at('s2-right', 110, 0), at('s15-none', 0, 112, 270), at('s15-left', 0, 218, 270)],
+  },
+  {
+    id: 'open-end', name: '4-seat with open end', note: 'Armrest at the west wall, lounging end open towards the room',
+    modules: [at('s2-left', 0, 0), at('open-right', 142, 0)],
+  },
+  {
+    id: 'sofa4-foot', name: '4-seat with footstool XL', note: 'Footstool pushed up as a loose chaise by the west wall',
+    modules: [at('s2-left', 0, 0), at('s2-right', 142, 0), at('foot-xl', 0, 112)],
+  },
+]

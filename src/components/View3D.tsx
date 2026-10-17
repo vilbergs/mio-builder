@@ -5,7 +5,8 @@ import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeom
 import { useStore, moduleIssues, type Design } from '../store'
 import { MODULE_BY_ID } from '../data/modules'
 import { moduleParts, pillowParts, type Part } from '../model/parts'
-import { footprint, walls, snapGroupDelta, pointInPolygon, OPENING_DEFAULTS, type Placed, type Pt } from '../model/geometry'
+import { footprint, walls, pointInPolygon, OPENING_DEFAULTS, type Placed, type Pt } from '../model/geometry'
+import { shapeOf, type Item } from '../data/furniture'
 import { fabricTextures, woodTexture, imageTexture } from '../three/textures'
 import { shade } from '../model/color'
 import { requestCamera, type CameraView } from '../exportImage'
@@ -46,7 +47,80 @@ function outerRing(room: Pt[]): Pt[] {
   })
 }
 
-const shapeOf = (pts: Pt[]) => new THREE.Shape(pts.map((p) => new THREE.Vector2(p.x * M, -p.y * M)))
+/** A piece of furniture as simple solids, centred on its footprint with y = 0 on the floor. */
+function buildItem(it: Item, sketch: boolean, bad: boolean): THREE.Group {
+  const g = new THREE.Group()
+  const w = it.w * M, d = it.d * M, h = it.h * M
+  const mat = (tone = 0) => sketch
+    ? new THREE.MeshLambertMaterial({ color: bad ? '#f2c4bd' : shade('#fbf9f4', tone / 3) })
+    : new THREE.MeshStandardMaterial({
+      color: shade(it.color, tone), roughness: 0.8,
+      emissive: new THREE.Color(bad ? '#ff2a1a' : '#000000'), emissiveIntensity: bad ? 0.35 : 0,
+    })
+  const add = (geo: THREE.BufferGeometry, x: number, y: number, z: number, tone = 0) => {
+    const mesh = new THREE.Mesh(geo, mat(tone))
+    mesh.position.set(x, y, z)
+    mesh.castShadow = !sketch && shapeOf(it) !== 'rug'
+    mesh.receiveShadow = !sketch
+    g.add(mesh)
+    if (sketch) {
+      const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geo, 30), new THREE.LineBasicMaterial({ color: '#2f2e2a' }))
+      edges.position.copy(mesh.position)
+      g.add(edges)
+    }
+  }
+  const box = (bw: number, bh: number, bd: number, x: number, y0: number, z: number, tone = 0) => add(new THREE.BoxGeometry(bw, bh, bd), x, y0 + bh / 2, z, tone)
+  switch (shapeOf(it)) {
+    case 'cabinet': {
+      const plinth = Math.min(0.08, h * 0.1)
+      box(w - 0.02, plinth, d - 0.03, 0, 0, -0.01, -0.3)
+      box(w, h - plinth, d, 0, plinth, 0)
+      // Door split down the front of anything wider than a single door.
+      if (w > 0.6 && h > 0.3) box(0.004, (h - plinth) * 0.94, 0.004, 0, plinth + (h - plinth) * 0.03, d / 2 + 0.002, -0.35)
+      break
+    }
+    case 'table': {
+      const top = Math.min(0.04, h / 3), leg = 0.05
+      box(w, top, d, 0, h - top, 0)
+      for (const sx of [-1, 1]) for (const sz of [-1, 1]) box(leg, h - top, leg, sx * (w / 2 - leg), 0, sz * (d / 2 - leg), -0.15)
+      break
+    }
+    case 'round': {
+      const top = Math.min(0.03, h / 3)
+      const disc = new THREE.CylinderGeometry(w / 2, w / 2, top, 40)
+      disc.scale(1, 1, d / w)
+      add(disc, 0, h - top / 2, 0)
+      add(new THREE.CylinderGeometry(0.025, 0.025, h - top, 12), 0, (h - top) / 2, 0, -0.15)
+      add(new THREE.CylinderGeometry(w * 0.25, w * 0.28, 0.02, 30), 0, 0.01, 0, -0.15)
+      break
+    }
+    case 'chair': {
+      const seatH = Math.min(0.45, h * 0.55), back = Math.min(0.16, d * 0.22)
+      const arm = w >= 0.7 ? Math.min(0.14, w * 0.18) : 0
+      const legs = arm ? 0.1 : seatH - 0.06
+      if (arm) box(w, legs, d, 0, 0, 0, -0.25)
+      else for (const sx of [-1, 1]) for (const sz of [-1, 1]) box(0.035, legs, 0.035, sx * (w / 2 - 0.03), 0, sz * (d / 2 - 0.03), -0.2)
+      box(w - arm * 2, seatH - legs, d - back, 0, legs, back / 2, 0.08)
+      box(w, h - legs, back, 0, legs, -d / 2 + back / 2, -0.1)
+      if (arm) for (const sx of [-1, 1]) box(arm, seatH + 0.15 - legs, d - back, sx * (w / 2 - arm / 2), legs, back / 2, -0.05)
+      break
+    }
+    case 'plant': {
+      const r = Math.min(w, d) / 2
+      add(new THREE.CylinderGeometry(r * 0.6, r * 0.45, h * 0.3, 24), 0, h * 0.15, 0, -0.55)
+      const leaves = new THREE.IcosahedronGeometry(r, 1)
+      leaves.scale(w / (2 * r), (h * 0.75) / (2 * r), d / (2 * r))
+      add(leaves, 0, h * 0.3 + h * 0.35, 0)
+      break
+    }
+    case 'rug':
+      box(w, Math.max(0.005, h), d, 0, 0, 0)
+      break
+  }
+  return g
+}
+
+const polyShape = (pts: Pt[]) => new THREE.Shape(pts.map((p) => new THREE.Vector2(p.x * M, -p.y * M)))
 
 export function View3D() {
   const host = useRef<HTMLDivElement>(null)
@@ -155,7 +229,7 @@ export function View3D() {
     const ray = new THREE.Raycaster()
     const ndc = new THREE.Vector2()
     const floor = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0)
-    let drag: { start: Pt; base: Placed[]; moved: boolean; future: Design[] } | null = null
+    let drag: { start: Pt; base: Placed[]; items: Item[]; moved: boolean; future: Design[] } | null = null
     let handled = false
     const setNdc = (e: PointerEvent) => {
       const r = renderer.domElement.getBoundingClientRect()
@@ -185,7 +259,7 @@ export function View3D() {
       const sel = new Set(useStore.getState().selected)
       if (!sel.has(uid)) return
       controls.enabled = false
-      drag = { start: p, base: state.modules.filter((x) => sel.has(x.uid)), moved: false, future: state.future }
+      drag = { start: p, base: state.modules.filter((x) => sel.has(x.uid)), items: state.items.filter((x) => sel.has(x.uid)), moved: false, future: state.future }
       state.snapshot()
       renderer.domElement.setPointerCapture(e.pointerId)
     }
@@ -194,12 +268,7 @@ export function View3D() {
       setNdc(e)
       const p = floorPt()
       if (!p) return
-      const state = useStore.getState()
-      const ids = new Set(drag.base.map((m) => m.uid))
-      const others = state.modules.filter((x) => !ids.has(x.uid)).map(footprint)
-      const d = snapGroupDelta(drag.base.map(footprint), { x: p.x - drag.start.x, y: p.y - drag.start.y }, others, state.room, 8)
-      const moved = new Map(drag.base.map((m) => [m.uid, { ...m, x: Math.round((m.x + d.x) * 2) / 2, y: Math.round((m.y + d.y) * 2) / 2 }]))
-      state.setModules(state.modules.map((m) => moved.get(m.uid) ?? m), false)
+      useStore.getState().dragPieces({ modules: drag.base, items: drag.items }, { x: p.x - drag.start.x, y: p.y - drag.start.y }, 8)
       drag.moved = true
     }
     const onUp = (e: PointerEvent) => {
@@ -246,7 +315,7 @@ export function View3D() {
     c.sun.intensity = sketch ? 0.7 : 2.4
     c.renderer.toneMapping = sketch ? THREE.NoToneMapping : THREE.NeutralToneMapping
 
-    const floorGeo = new THREE.ShapeGeometry(shapeOf(s.room))
+    const floorGeo = new THREE.ShapeGeometry(polyShape(s.room))
     floorGeo.rotateX(-Math.PI / 2)
     const floorMat = sketch
       ? new THREE.MeshLambertMaterial({ color: '#fbf8f0' })
@@ -290,7 +359,7 @@ export function View3D() {
       const g = new THREE.Group()
       for (const [t0, t1, z0, z1] of pieces) {
         const quad = [at(t0), at(t1), out(t1), out(t0)]
-        const geo = new THREE.ExtrudeGeometry(shapeOf(quad), { depth: (z1 - z0) * M, bevelEnabled: false })
+        const geo = new THREE.ExtrudeGeometry(polyShape(quad), { depth: (z1 - z0) * M, bevelEnabled: false })
         geo.rotateX(-Math.PI / 2)
         geo.translate(0, z0 * M, 0)
         const mesh = new THREE.Mesh(geo, wallMat)
@@ -358,11 +427,14 @@ export function View3D() {
   useEffect(() => {
     const c = ctx.current
     if (!c) return
-    const issues = moduleIssues(s.modules, s.room, s.openings)
+    const issues = moduleIssues(s.modules, s.room, s.openings, s.items)
     // While dragging only positions change: move the existing meshes instead of rebuilding them.
-    const sig = JSON.stringify([s.modules.map((m) => [m.uid, m.defId, m.rot]), [...issues], s.selected, s.armStyle, s.fabric, s.fabricImage, s.showPillows, sketch])
-    if (built.current?.sig === sig && built.current.parent === c.couch && built.current.groups.size === s.modules.length) {
-      for (const m of s.modules) built.current.groups.get(m.uid)?.position.set(m.x * M, 0, m.y * M)
+    const sig = JSON.stringify([
+      s.modules.map((m) => [m.uid, m.defId, m.rot]), s.items.map((it) => [it.uid, it.type, it.rot, it.w, it.d, it.h, it.color]),
+      [...issues], s.selected, s.armStyle, s.fabric, s.fabricImage, s.showPillows, sketch,
+    ])
+    if (built.current?.sig === sig && built.current.parent === c.couch && built.current.groups.size === s.modules.length + s.items.length) {
+      for (const m of [...s.modules, ...s.items]) built.current.groups.get(m.uid)?.position.set(m.x * M, 0, m.y * M)
       return
     }
     disposeGroup(c.couch)
@@ -432,8 +504,23 @@ export function View3D() {
       c.couch.add(g)
       groups.set(pm.uid, g)
     })
+    s.items.forEach((it) => {
+      const g = buildItem(it, sketch, issues.has(it.uid))
+      g.userData.uid = it.uid
+      g.position.set(it.x * M, 0, it.y * M)
+      g.rotation.y = (-it.rot * Math.PI) / 180
+      if (s.selected.includes(it.uid)) {
+        const box = new THREE.Box3Helper(
+          new THREE.Box3(new THREE.Vector3((-it.w / 2) * M - 0.01, 0, (-it.d / 2) * M - 0.01), new THREE.Vector3((it.w / 2) * M + 0.01, it.h * M + 0.01, (it.d / 2) * M + 0.01)),
+          new THREE.Color('#2f6fed'),
+        )
+        g.add(box)
+      }
+      c.couch.add(g)
+      groups.set(it.uid, g)
+    })
     built.current = { sig, groups, parent: c.couch }
-  }, [s.modules, s.room, s.openings, s.showPillows, s.armStyle, s.fabric, s.fabricImage, s.selected, sketch])
+  }, [s.modules, s.items, s.room, s.openings, s.showPillows, s.armStyle, s.fabric, s.fabricImage, s.selected, sketch])
 
   return (
     <>
