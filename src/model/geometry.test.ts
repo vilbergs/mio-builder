@@ -139,3 +139,10 @@ describe('doors and windows', () => {
     expect(big.offset + big.width).toBeLessThanOrEqual(520)
   })
 })
+
+describe('room containment', () => {
+  it('rejects a rect bridging the gap between the arms of a U', () => {
+    expect(rectInsideRoom({ x0: 100, y0: 50, x1: 600, y1: 100 }, ROOM_PRESETS.U.pts)).toBe(false)
+    expect(rectInsideRoom({ x0: 100, y0: 200, x1: 600, y1: 300 }, ROOM_PRESETS.U.pts)).toBe(true)
+  })
+})

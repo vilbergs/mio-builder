@@ -200,8 +200,15 @@ export function rectInsideRoom(r: Rect, pts: Pt[]): boolean {
     { x: r.x0 + e, y: r.y1 - e },
   ]
   if (!corners.every((c) => pointInPolygon(c, pts))) return false
-  // A reflex corner of the room poking into the rect.
-  return !pts.some((p) => p.x > r.x0 + e && p.x < r.x1 - e && p.y > r.y0 + e && p.y < r.y1 - e)
+  // No wall may pass through the rect's interior (covers reflex corners poking in and walls spanning it).
+  return !walls(pts).some((w) => {
+    if (w.horizontal) {
+      const a = Math.min(w.a.x, w.b.x), b = Math.max(w.a.x, w.b.x)
+      return w.a.y > r.y0 + e && w.a.y < r.y1 - e && a < r.x1 - e && b > r.x0 + e
+    }
+    const a = Math.min(w.a.y, w.b.y), b = Math.max(w.a.y, w.b.y)
+    return w.a.x > r.x0 + e && w.a.x < r.x1 - e && a < r.y1 - e && b > r.y0 + e
+  })
 }
 
 export function snapCenter(

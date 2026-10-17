@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import rough from 'roughjs'
-import { useStore, moduleIssues } from '../store'
+import { useStore, moduleIssues, type Design } from '../store'
 import { MODULE_BY_ID } from '../data/modules'
 import { moduleParts, type Part } from '../model/parts'
 import {
-  footprint, localToPlan, walls, moveWall, openingEnds, fitOpening, type Opening, snapCenter, snapGroupDelta, boundsOf, polygonArea, isValidRoom, wallClearance,
+  footprint, localToPlan, walls, moveWall, normalizeRoom, openingEnds, fitOpening, type Opening, snapCenter, snapGroupDelta, boundsOf, polygonArea, isValidRoom, wallClearance,
   type Placed, type Pt, type Rect,
 } from '../model/geometry'
 import { shade } from '../model/color'
@@ -14,11 +14,11 @@ const WALL_T = 12
 const gen = rough.generator()
 
 type Drag =
-  | { kind: 'module'; start: Pt; base: Placed[]; moved: boolean }
+  | { kind: 'module'; start: Pt; base: Placed[]; moved: boolean; future: Design[] }
   | { kind: 'wall'; i: number; start: Pt; base: Pt[] }
   | { kind: 'pan'; sx: number; sy: number; vb: VB }
   | { kind: 'pinch'; dist: number; mid: Pt; vb: VB }
-  | { kind: 'opening'; id: string; t0: number; offset0: number; moved: boolean }
+  | { kind: 'opening'; id: string; t0: number; offset0: number; moved: boolean; future: Design[] }
 
 interface VB {
   x: number
@@ -71,12 +71,19 @@ export function Plan2D() {
     const vh = vw / aspect
     setVb({ x: (roomBounds.x0 + roomBounds.x1) / 2 - vw / 2, y: (roomBounds.y0 + roomBounds.y1) / 2 - vh / 2, w: vw, h: vh })
   }
+  const fitRef = useRef(fit)
   useEffect(() => {
-    fit()
-    const onResize = () => fit()
-    window.addEventListener('resize', onResize)
-    return () => window.removeEventListener('resize', onResize)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    fitRef.current = fit
+  })
+  useEffect(() => {
+    fitRef.current()
+    const onFit = () => fitRef.current()
+    window.addEventListener('resize', onFit)
+    window.addEventListener('rossi-fit', onFit)
+    return () => {
+      window.removeEventListener('resize', onFit)
+      window.removeEventListener('rossi-fit', onFit)
+    }
   }, [])
 
   const toPlan = (e: { clientX: number; clientY: number }): Pt => {
@@ -87,7 +94,15 @@ export function Plan2D() {
     const r = pt.matrixTransform(el.getScreenCTM()!.inverse())
     return { x: r.x, y: r.y }
   }
-  const pxToCm = () => (vb && svgRef.current ? vb.w / svgRef.current.clientWidth : 1)
+  const [pxWidth, setPxWidth] = useState(1)
+  useEffect(() => {
+    const el = svgRef.current
+    if (!el) return
+    const ro = new ResizeObserver(() => setPxWidth(Math.max(1, el.clientWidth)))
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+  const pxToCm = () => (vb ? vb.w / pxWidth : 1)
 
   const onWheel = (e: React.WheelEvent) => {
     if (!vb) return
@@ -107,7 +122,7 @@ export function Plan2D() {
     s.set({ selectedWall: null })
     const sel = new Set(useStore.getState().selected)
     if (!sel.has(m.uid)) return
-    setDrag({ kind: 'module', start: toPlan(e), base: s.modules.filter((x) => sel.has(x.uid)), moved: false })
+    setDrag({ kind: 'module', start: toPlan(e), base: s.modules.filter((x) => sel.has(x.uid)), moved: false, future: s.future })
     s.snapshot()
   }
 
@@ -121,8 +136,8 @@ export function Plan2D() {
     e.stopPropagation()
     ;(e.target as Element).setPointerCapture?.(e.pointerId)
     s.set({ selectedWall: o.wall, selected: [] })
+    setDrag({ kind: 'opening', id: o.id, t0: alongWall(o, toPlan(e)), offset0: o.offset, moved: false, future: s.future })
     s.snapshot()
-    setDrag({ kind: 'opening', id: o.id, t0: alongWall(o, toPlan(e)), offset0: o.offset, moved: false })
   }
 
   const startWall = (e: React.PointerEvent, i: number) => {
@@ -201,7 +216,9 @@ export function Plan2D() {
         const v = w.horizontal ? o.a.y : o.a.x
         if (Math.abs(v - target) < thr) delta = (v - cur) * (w.horizontal ? w.inward.y : w.inward.x)
       }
-      const next = moveWall(drag.base, drag.i, delta)
+      const moved = moveWall(drag.base, drag.i, delta)
+      // Landing exactly on a parallel wall leaves a zero-length step; show it already merged.
+      const next = isValidRoom(moved) ? moved : normalizeRoom(moved)
       if (isValidRoom(next)) s.setRoom(next, false, drag.base)
     }
   }
@@ -218,8 +235,9 @@ export function Plan2D() {
       if (room !== drag.base) s.setRoom(room, true)
     }
     if ((drag?.kind === 'module' || drag?.kind === 'opening') && !drag.moved) {
-      // A click without a move shouldn't leave an undo step behind.
-      useStore.setState((st) => ({ past: st.past.slice(0, -1) }))
+      // A click without a move shouldn't leave an undo step behind or lose the redo stack.
+      const future = drag.future
+      useStore.setState((st) => ({ past: st.past.slice(0, -1), future }))
     }
     setDrag(null)
   }

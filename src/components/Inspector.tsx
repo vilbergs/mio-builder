@@ -4,6 +4,8 @@ import { MODULE_BY_ID, FABRICS, ROSSI } from '../data/modules'
 import { PRESETS } from '../data/presets'
 import { footprint, boundsOf, walls, setWallLength, addNotch, alignWall, normalizeRoom, polygonArea, ROOM_PRESETS, isValidRoom } from '../model/geometry'
 
+const refit = () => setTimeout(() => window.dispatchEvent(new Event('rossi-fit')), 50)
+
 function NumberField({ label, value, onCommit, min = 1, step = 1 }: { label: string; value: number; onCommit: (v: number) => void; min?: number; step?: number }) {
   return (
     <label className="field">
@@ -163,7 +165,7 @@ function RoomPanel() {
       <p className="hint">Drag a wall in the plan to move it, or type exact lengths. Walls stay horizontal or vertical.</p>
       <div className="btns">
         {Object.entries(ROOM_PRESETS).map(([k, p]) => (
-          <button key={k} onClick={() => { s.setRoom(p.pts); s.set({ selectedWall: null }) }}>{p.name}</button>
+          <button key={k} onClick={() => { s.setRoom(p.pts); s.set({ selectedWall: null }); refit() }}>{p.name}</button>
         ))}
       </div>
       <div className="stats">
@@ -281,7 +283,7 @@ function FilePanel() {
         try {
           const d = JSON.parse(await f.text()) as Design
           if (!Array.isArray(d.room) || !Array.isArray(d.modules)) throw new Error('bad file')
-          s.loadDesign(d)
+          if (s.loadDesign(d)) refit()
         } catch {
           s.showToast('That file is not a Rossi design (expected an exported .json file).')
         }

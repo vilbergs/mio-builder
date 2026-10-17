@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js'
-import { useStore, moduleIssues } from '../store'
+import { useStore, moduleIssues, type Design } from '../store'
 import { MODULE_BY_ID } from '../data/modules'
 import { moduleParts, type Part } from '../model/parts'
 import { footprint, walls, snapGroupDelta, pointInPolygon, OPENING_DEFAULTS, type Placed, type Pt } from '../model/geometry'
@@ -155,7 +155,8 @@ export function View3D() {
     const ray = new THREE.Raycaster()
     const ndc = new THREE.Vector2()
     const floor = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0)
-    let drag: { start: Pt; base: Placed[]; moved: boolean } | null = null
+    let drag: { start: Pt; base: Placed[]; moved: boolean; future: Design[] } | null = null
+    let handled = false
     const setNdc = (e: PointerEvent) => {
       const r = renderer.domElement.getBoundingClientRect()
       ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1)
@@ -168,6 +169,7 @@ export function View3D() {
     let downAt: { x: number; y: number } | null = null
     const onDown = (e: PointerEvent) => {
       downAt = { x: e.clientX, y: e.clientY }
+      handled = false
       const state = useStore.getState()
       if (state.edit !== 'couch') return
       setNdc(e)
@@ -179,11 +181,12 @@ export function View3D() {
       const p = floorPt()
       if (!p) return
       state.select(uid, e.shiftKey || e.ctrlKey || e.metaKey)
+      handled = true
       const sel = new Set(useStore.getState().selected)
       if (!sel.has(uid)) return
       controls.enabled = false
+      drag = { start: p, base: state.modules.filter((x) => sel.has(x.uid)), moved: false, future: state.future }
       state.snapshot()
-      drag = { start: p, base: state.modules.filter((x) => sel.has(x.uid)), moved: false }
       renderer.domElement.setPointerCapture(e.pointerId)
     }
     const onMove = (e: PointerEvent) => {
@@ -200,8 +203,11 @@ export function View3D() {
       drag.moved = true
     }
     const onUp = (e: PointerEvent) => {
-      if (drag && !drag.moved) useStore.setState((st) => ({ past: st.past.slice(0, -1) }))
-      if (!drag && downAt && Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y) < 4) useStore.getState().clearSelection()
+      if (drag && !drag.moved) {
+        const future = drag.future
+        useStore.setState((st) => ({ past: st.past.slice(0, -1), future }))
+      }
+      if (!drag && !handled && downAt && Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y) < 4) useStore.getState().clearSelection()
       drag = null
       downAt = null
       controls.enabled = true
@@ -210,6 +216,7 @@ export function View3D() {
     dom.addEventListener('pointerdown', onDown)
     dom.addEventListener('pointermove', onMove)
     dom.addEventListener('pointerup', onUp)
+    dom.addEventListener('pointercancel', onUp)
 
     return () => {
       window.removeEventListener('rossi-camera', onCamera)
@@ -218,6 +225,7 @@ export function View3D() {
       dom.removeEventListener('pointerdown', onDown)
       dom.removeEventListener('pointermove', onMove)
       dom.removeEventListener('pointerup', onUp)
+      dom.removeEventListener('pointercancel', onUp)
       disposeGroup(room)
       disposeGroup(couch)
       controls.dispose()
@@ -346,11 +354,19 @@ export function View3D() {
   }, [s.room, s.openings, s.wallHeight, sketch])
 
   // ----- couch -----
+  const built = useRef<{ sig: string; groups: Map<string, THREE.Group>; parent: THREE.Group } | null>(null)
   useEffect(() => {
     const c = ctx.current
     if (!c) return
-    disposeGroup(c.couch)
     const issues = moduleIssues(s.modules, s.room, s.openings)
+    // While dragging only positions change: move the existing meshes instead of rebuilding them.
+    const sig = JSON.stringify([s.modules.map((m) => [m.uid, m.defId, m.rot]), [...issues], s.selected, s.armStyle, s.fabric, s.fabricImage, sketch])
+    if (built.current?.sig === sig && built.current.parent === c.couch && built.current.groups.size === s.modules.length) {
+      for (const m of s.modules) built.current.groups.get(m.uid)?.position.set(m.x * M, 0, m.y * M)
+      return
+    }
+    disposeGroup(c.couch)
+    const groups = new Map<string, THREE.Group>()
     const tex = sketch ? null : s.fabricImage ? { map: imageTexture(s.fabricImage), bumpMap: null } : fabricTextures(s.fabric)
     const mats = new Map<string, THREE.Material>()
     const matFor = (kind: Part['kind'], bad: boolean): THREE.Material => {
@@ -408,7 +424,9 @@ export function View3D() {
         g.add(box)
       }
       c.couch.add(g)
+      groups.set(pm.uid, g)
     })
+    built.current = { sig, groups, parent: c.couch }
   }, [s.modules, s.room, s.openings, s.armStyle, s.fabric, s.fabricImage, s.selected, sketch])
 
   return (

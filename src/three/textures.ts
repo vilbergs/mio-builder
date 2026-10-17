@@ -15,9 +15,21 @@ let wood: THREE.Texture | null = null
 /** Woven fabric: returns a colour map and a bump map (cached per colour). */
 export function fabricTextures(hex: string) {
   const hit = fabricCache.get(hex)
-  if (hit) return hit
+  if (hit) {
+    // Re-insert so the map's order is least- to most-recently used.
+    fabricCache.delete(hex)
+    fabricCache.set(hex, hit)
+    return hit
+  }
   const made = makeFabric(hex)
   fabricCache.set(hex, made)
+  // Dragging the colour picker visits many colours; keep only the last few in memory.
+  while (fabricCache.size > 8) {
+    const [oldKey, old] = fabricCache.entries().next().value!
+    old.map.dispose()
+    old.bumpMap.dispose()
+    fabricCache.delete(oldKey)
+  }
   return made
 }
 
@@ -117,6 +129,10 @@ export function imageTexture(url: string) {
   t.colorSpace = THREE.SRGBColorSpace
   t.wrapS = t.wrapT = THREE.RepeatWrapping
   t.repeat.set(2, 2)
+  for (const [k, old] of imageCache) {
+    old.dispose()
+    imageCache.delete(k)
+  }
   imageCache.set(url, t)
   return t
 }

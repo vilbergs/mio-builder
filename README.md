@@ -12,6 +12,7 @@ Mio doesn't have an official couch builder so I'm trying to make my own.
 - Shift-click or Ctrl+A to select several modules and move, rotate, mirror, duplicate or delete them together.
 - Live distances from the selection to the nearest wall on each side.
 - Room editor with any number of walls (all horizontal/vertical): presets, drag walls, type exact lengths, add notches or bays, line a wall up with its neighbour to remove a step.
+- Doors and windows on any wall (drag them along the wall or type sizes); modules in a door's swing are flagged.
 - 2D plan and 3D view, each in **Sketch** (pencil on paper / clay with outlines) or **Realistic** (fabric, wood floor, shadows) style.
 - Armrest A or B, fabric colours, or your own fabric photo as texture.
 - 3D camera views (overview, top, eye level) and image export of the plan or the 3D view.

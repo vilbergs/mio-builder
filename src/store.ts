@@ -63,7 +63,7 @@ interface State extends Design {
   addOpening: (kind: Opening['kind'], wall: number) => void
   updateOpening: (id: string, patch: Partial<Opening>) => void
   removeOpening: (id: string) => void
-  loadDesign: (d: Design) => void
+  loadDesign: (d: Design) => boolean
 }
 
 const STORAGE_KEY = 'rossi-builder-design-v1'
@@ -126,8 +126,9 @@ function freeSpot(s: Design, w: number, h: number, prefer?: Pt): Pt {
 }
 
 let toastTimer: ReturnType<typeof setTimeout> | undefined
-let counter = Date.now() % 100000
-const uid = () => `m${(counter++).toString(36)}`
+let counter = 0
+// Random part keeps ids unique against ones saved in earlier sessions or imported files.
+const uid = () => `m${Math.random().toString(36).slice(2, 8)}${(counter++).toString(36)}`
 
 export const useStore = create<State>((set, get) => ({
   ...loadSaved(),
@@ -303,17 +304,44 @@ export const useStore = create<State>((set, get) => ({
   removeOpening: (id) => get().commit({ openings: get().openings.filter((o) => o.id !== id) }),
 
   loadDesign: (d) => {
-    get().commit({ ...defaultDesign, ...d, openings: d.openings ?? [] })
+    const room = Array.isArray(d.room) ? normalizeRoom(d.room.filter((p) => Number.isFinite(p?.x) && Number.isFinite(p?.y))) : []
+    if (!isValidRoom(room)) {
+      get().showToast('That file has no valid room (walls must be horizontal or vertical and must not cross).')
+      return false
+    }
+    const modules = (Array.isArray(d.modules) ? d.modules : [])
+      .filter((m) => MODULE_BY_ID[m?.defId] && Number.isFinite(m.x) && Number.isFinite(m.y))
+      .map((m) => ({ ...m, uid: uid(), rot: ([0, 90, 180, 270].includes(m.rot) ? m.rot : 0) as Placed['rot'] }))
+    const skipped = (Array.isArray(d.modules) ? d.modules.length : 0) - modules.length
+    const openings = (Array.isArray(d.openings) ? d.openings : []).flatMap((o) => {
+      const f = o && (o.kind === 'door' || o.kind === 'window') ? fitOpening({ ...o, id: uid() }, room) : null
+      return f ? [f] : []
+    })
+    get().commit({
+      room, modules, openings,
+      wallHeight: Number.isFinite(d.wallHeight) && d.wallHeight >= 150 ? d.wallHeight : defaultDesign.wallHeight,
+      armStyle: d.armStyle === 'A' ? 'A' : 'B',
+      fabric: /^#[0-9a-f]{6}$/i.test(d.fabric) ? d.fabric : defaultDesign.fabric,
+    })
     set({ selected: [], selectedWall: null })
+    if (skipped > 0) get().showToast(`Skipped ${skipped} module${skipped > 1 ? 's' : ''} this version doesn't know.`)
+    return true
   },
 }))
 
-useStore.subscribe((s) => {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(pick(s)))
-  } catch {
-    // storage unavailable: the design just won't survive a reload
-  }
+let saveTimer: ReturnType<typeof setTimeout> | undefined
+useStore.subscribe((s, prev) => {
+  const keys = ['room', 'openings', 'wallHeight', 'modules', 'armStyle', 'fabric'] as const
+  if (keys.every((k) => s[k] === prev[k])) return
+  // Debounced so a drag doesn't serialise the design on every pointer move.
+  clearTimeout(saveTimer)
+  saveTimer = setTimeout(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(pick(useStore.getState())))
+    } catch {
+      // storage unavailable: the design just won't survive a reload
+    }
+  }, 250)
 })
 
 export function moduleIssues(modules: Placed[], room: Pt[], openings: Opening[] = []): Set<string> {
