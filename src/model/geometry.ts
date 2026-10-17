@@ -1,0 +1,252 @@
+import { MODULE_BY_ID } from '../data/modules'
+
+export interface Pt {
+  x: number
+  y: number
+}
+
+export type Rot = 0 | 90 | 180 | 270
+
+export interface Placed {
+  uid: string
+  defId: string
+  x: number // footprint centre, cm
+  y: number
+  rot: Rot
+}
+
+export interface Rect {
+  x0: number
+  y0: number
+  x1: number
+  y1: number
+}
+
+// ---------- placed modules ----------
+
+export function footprint(p: Placed): Rect {
+  const def = MODULE_BY_ID[p.defId]
+  const swap = p.rot === 90 || p.rot === 270
+  const w = swap ? def.depth : def.width
+  const h = swap ? def.width : def.depth
+  return { x0: p.x - w / 2, y0: p.y - h / 2, x1: p.x + w / 2, y1: p.y + h / 2 }
+}
+
+/** Map a module-local point (origin top-left of the unrotated footprint, y = 0 at the back) to plan coordinates. */
+export function localToPlan(p: Placed, lx: number, ly: number): Pt {
+  const def = MODULE_BY_ID[p.defId]
+  const cx = lx - def.width / 2
+  const cy = ly - def.depth / 2
+  const t = (p.rot * Math.PI) / 180
+  const c = Math.round(Math.cos(t))
+  const s = Math.round(Math.sin(t))
+  return { x: p.x + cx * c - cy * s, y: p.y + cx * s + cy * c }
+}
+
+export function rectsOverlap(a: Rect, b: Rect, eps = 0.5): boolean {
+  return a.x0 < b.x1 - eps && b.x0 < a.x1 - eps && a.y0 < b.y1 - eps && b.y0 < a.y1 - eps
+}
+
+export function boundsOf(rects: Rect[]): Rect | null {
+  if (!rects.length) return null
+  return {
+    x0: Math.min(...rects.map((r) => r.x0)),
+    y0: Math.min(...rects.map((r) => r.y0)),
+    x1: Math.max(...rects.map((r) => r.x1)),
+    y1: Math.max(...rects.map((r) => r.y1)),
+  }
+}
+
+// ---------- room polygon (axis-aligned walls only) ----------
+
+export function polygonArea(pts: Pt[]): number {
+  let a = 0
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i]
+    const q = pts[(i + 1) % pts.length]
+    a += p.x * q.y - q.x * p.y
+  }
+  return a / 2
+}
+
+export function pointInPolygon(pt: Pt, pts: Pt[]): boolean {
+  let inside = false
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const a = pts[i]
+    const b = pts[j]
+    if (a.y > pt.y !== b.y > pt.y && pt.x < ((b.x - a.x) * (pt.y - a.y)) / (b.y - a.y) + a.x) inside = !inside
+  }
+  return inside
+}
+
+export interface Wall {
+  i: number
+  a: Pt
+  b: Pt
+  horizontal: boolean
+  length: number
+  inward: Pt // unit normal pointing into the room
+}
+
+export function walls(pts: Pt[]): Wall[] {
+  const sign = polygonArea(pts) > 0 ? 1 : -1
+  return pts.map((a, i) => {
+    const b = pts[(i + 1) % pts.length]
+    const dx = b.x - a.x
+    const dy = b.y - a.y
+    const len = Math.hypot(dx, dy) || 1
+    // For positive area (clockwise on a y-down screen) the interior is to the right of travel: (-dy, dx).
+    const inward = { x: (-dy / len) * sign, y: (dx / len) * sign }
+    return { i, a, b, horizontal: Math.abs(dy) < 1e-9, length: Math.hypot(dx, dy), inward }
+  })
+}
+
+function segmentsCross(a: Wall, b: Wall): boolean {
+  // Axis-aligned segments: proper overlap test including collinear overlap.
+  const ax0 = Math.min(a.a.x, a.b.x), ax1 = Math.max(a.a.x, a.b.x)
+  const ay0 = Math.min(a.a.y, a.b.y), ay1 = Math.max(a.a.y, a.b.y)
+  const bx0 = Math.min(b.a.x, b.b.x), bx1 = Math.max(b.a.x, b.b.x)
+  const by0 = Math.min(b.a.y, b.b.y), by1 = Math.max(b.a.y, b.b.y)
+  return ax0 <= bx1 && bx0 <= ax1 && ay0 <= by1 && by0 <= ay1
+}
+
+export function isValidRoom(pts: Pt[]): boolean {
+  if (pts.length < 4) return false
+  const ws = walls(pts)
+  for (const w of ws) {
+    if (w.length < 1) return false
+    const ok = Math.abs(w.a.x - w.b.x) < 1e-9 || Math.abs(w.a.y - w.b.y) < 1e-9
+    if (!ok) return false
+  }
+  const n = ws.length
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 2; j < n; j++) {
+      if (i === 0 && j === n - 1) continue
+      if (segmentsCross(ws[i], ws[j])) return false
+    }
+  }
+  return Math.abs(polygonArea(pts)) > 1
+}
+
+/** Remove zero-length walls and merge collinear neighbours. */
+export function normalizeRoom(pts: Pt[]): Pt[] {
+  let out = pts.map((p) => ({ x: Math.round(p.x * 10) / 10, y: Math.round(p.y * 10) / 10 }))
+  let changed = true
+  while (changed && out.length > 4) {
+    changed = false
+    for (let i = 0; i < out.length; i++) {
+      const prev = out[(i - 1 + out.length) % out.length]
+      const cur = out[i]
+      const next = out[(i + 1) % out.length]
+      const samePrev = prev.x === cur.x && prev.y === cur.y
+      const collinear = (prev.x === cur.x && cur.x === next.x) || (prev.y === cur.y && cur.y === next.y)
+      if (samePrev || collinear) {
+        out = out.filter((_, k) => k !== i)
+        changed = true
+        break
+      }
+    }
+  }
+  return out
+}
+
+/** Move wall i perpendicular to itself by delta (cm, along the inward normal). */
+export function moveWall(pts: Pt[], i: number, delta: number): Pt[] {
+  const w = walls(pts)[i]
+  const j = (i + 1) % pts.length
+  return pts.map((p, k) => (k === i || k === j ? { x: p.x + w.inward.x * delta, y: p.y + w.inward.y * delta } : p))
+}
+
+/** Set wall i to an exact length by moving the wall that follows it. */
+export function setWallLength(pts: Pt[], i: number, length: number): Pt[] {
+  const ws = walls(pts)
+  const w = ws[i]
+  const next = ws[(i + 1) % ws.length]
+  const dir = { x: (w.b.x - w.a.x) / w.length, y: (w.b.y - w.a.y) / w.length }
+  const delta = length - w.length
+  // Moving the next wall along `dir` by delta; express as movement along its inward normal.
+  const along = dir.x * next.inward.x + dir.y * next.inward.y
+  return moveWall(pts, next.i, delta * along)
+}
+
+/** Split wall i into three and push the middle third in (positive depth) or out. Adds four walls. */
+export function addNotch(pts: Pt[], i: number, depth = 60): Pt[] {
+  const w = walls(pts)[i]
+  const t1 = 1 / 3
+  const t2 = 2 / 3
+  const p1 = { x: w.a.x + (w.b.x - w.a.x) * t1, y: w.a.y + (w.b.y - w.a.y) * t1 }
+  const p2 = { x: w.a.x + (w.b.x - w.a.x) * t2, y: w.a.y + (w.b.y - w.a.y) * t2 }
+  const r = (p: Pt) => ({ x: Math.round(p.x), y: Math.round(p.y) })
+  const q1 = r({ x: p1.x + w.inward.x * depth, y: p1.y + w.inward.y * depth })
+  const q2 = r({ x: p2.x + w.inward.x * depth, y: p2.y + w.inward.y * depth })
+  return [...pts.slice(0, i + 1), r(p1), q1, q2, r(p2), ...pts.slice(i + 1)]
+}
+
+export const ROOM_PRESETS: Record<string, { name: string; pts: Pt[] }> = {
+  rect: { name: 'Rectangle', pts: [{ x: 0, y: 0 }, { x: 520, y: 0 }, { x: 520, y: 420 }, { x: 0, y: 420 }] },
+  L: { name: 'L-shape', pts: [{ x: 0, y: 0 }, { x: 600, y: 0 }, { x: 600, y: 300 }, { x: 360, y: 300 }, { x: 360, y: 520 }, { x: 0, y: 520 }] },
+  U: { name: 'U-shape', pts: [{ x: 0, y: 0 }, { x: 220, y: 0 }, { x: 220, y: 160 }, { x: 460, y: 160 }, { x: 460, y: 0 }, { x: 680, y: 0 }, { x: 680, y: 480 }, { x: 0, y: 480 }] },
+  T: { name: 'T-shape', pts: [{ x: 0, y: 0 }, { x: 700, y: 0 }, { x: 700, y: 260 }, { x: 500, y: 260 }, { x: 500, y: 560 }, { x: 200, y: 560 }, { x: 200, y: 260 }, { x: 0, y: 260 }] },
+}
+
+// ---------- placement checks and snapping ----------
+
+export function rectInsideRoom(r: Rect, pts: Pt[]): boolean {
+  const e = 0.6
+  const corners = [
+    { x: r.x0 + e, y: r.y0 + e },
+    { x: r.x1 - e, y: r.y0 + e },
+    { x: r.x1 - e, y: r.y1 - e },
+    { x: r.x0 + e, y: r.y1 - e },
+  ]
+  if (!corners.every((c) => pointInPolygon(c, pts))) return false
+  // A reflex corner of the room poking into the rect.
+  return !pts.some((p) => p.x > r.x0 + e && p.x < r.x1 - e && p.y > r.y0 + e && p.y < r.y1 - e)
+}
+
+export function snapCenter(
+  size: { w: number; h: number },
+  c: Pt,
+  others: Rect[],
+  room: Pt[],
+  threshold: number,
+): Pt {
+  const xs: number[] = []
+  const ys: number[] = []
+  const near = 160
+  const y0 = c.y - size.h / 2, y1 = c.y + size.h / 2
+  const x0 = c.x - size.w / 2, x1 = c.x + size.w / 2
+  for (const o of others) {
+    if (o.y0 < y1 + near && o.y1 > y0 - near) xs.push(o.x0, o.x1)
+    if (o.x0 < x1 + near && o.x1 > x0 - near) ys.push(o.y0, o.y1)
+  }
+  for (const w of walls(room)) {
+    if (w.horizontal) {
+      const a = Math.min(w.a.x, w.b.x), b = Math.max(w.a.x, w.b.x)
+      if (a < x1 + near && b > x0 - near) ys.push(w.a.y)
+    } else {
+      const a = Math.min(w.a.y, w.b.y), b = Math.max(w.a.y, w.b.y)
+      if (a < y1 + near && b > y0 - near) xs.push(w.a.x)
+    }
+  }
+  const pick = (lo: number, hi: number, targets: number[]) => {
+    let best = 0
+    let bestAbs = threshold
+    for (const t of targets) {
+      for (const d of [t - lo, t - hi]) {
+        if (Math.abs(d) < bestAbs) {
+          bestAbs = Math.abs(d)
+          best = d
+        }
+      }
+    }
+    return bestAbs < threshold ? best : null
+  }
+  const dx = pick(x0, x1, xs)
+  const dy = pick(y0, y1, ys)
+  const snap = (v: number, lo: number) => Math.round(lo) - lo + v // keep edges on whole centimetres
+  return {
+    x: dx !== null ? c.x + dx : snap(c.x, x0),
+    y: dy !== null ? c.y + dy : snap(c.y, y0),
+  }
+}
