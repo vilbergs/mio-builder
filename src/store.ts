@@ -4,7 +4,8 @@ import type { ArmStyle } from './model/parts'
 import { PRESETS } from './data/presets'
 import {
   footprint, rectsOverlap, rectInsideRoom, normalizeRoom, isValidRoom, ROOM_PRESETS, boundsOf, mirrorPlaced, rotatePlacedAbout,
-  type Placed, type Pt, type Rect,
+  reattachOpenings, fitOpening, walls, OPENING_DEFAULTS, doorSwing,
+  type Placed, type Pt, type Rect, type Opening,
 } from './model/geometry'
 
 export type ViewMode = '2d' | '3d'
@@ -20,6 +21,7 @@ export interface ExportPreview {
 
 export interface Design {
   room: Pt[]
+  openings: Opening[]
   wallHeight: number
   modules: Placed[]
   armStyle: ArmStyle
@@ -35,6 +37,7 @@ interface State extends Design {
   fabricImage: string | null
   toast: string | null
   exportPreview: ExportPreview | null
+  dragOpenings: Opening[] | null
   past: Design[]
   future: Design[]
 
@@ -56,7 +59,10 @@ interface State extends Design {
   removeSelection: () => void
   duplicateSelection: () => void
   snapshot: () => void
-  setRoom: (pts: Pt[], record?: boolean) => void
+  setRoom: (pts: Pt[], record?: boolean, base?: Pt[]) => void
+  addOpening: (kind: Opening['kind'], wall: number) => void
+  updateOpening: (id: string, patch: Partial<Opening>) => void
+  removeOpening: (id: string) => void
   loadDesign: (d: Design) => void
 }
 
@@ -64,6 +70,10 @@ const STORAGE_KEY = 'rossi-builder-design-v1'
 
 const defaultDesign: Design = {
   room: ROOM_PRESETS.L.pts,
+  openings: [
+    { id: 'o1', kind: 'window', wall: 0, offset: 420, width: 140 },
+    { id: 'o2', kind: 'door', wall: 4, offset: 40, width: 90 },
+  ],
   wallHeight: 250,
   modules: [
     { uid: 'm1', defId: 's2-left', x: 111, y: 56, rot: 0 },
@@ -81,19 +91,20 @@ function loadSaved(): Design {
     if (!raw) return defaultDesign
     const d = JSON.parse(raw) as Design
     if (!Array.isArray(d.room) || !Array.isArray(d.modules)) return defaultDesign
-    return { ...defaultDesign, ...d, modules: d.modules.filter((m) => MODULE_BY_ID[m.defId]) }
+    return { ...defaultDesign, ...d, openings: d.openings ?? [], modules: d.modules.filter((m) => MODULE_BY_ID[m.defId]) }
   } catch {
     return defaultDesign
   }
 }
 
 function pick(s: Design): Design {
-  return { room: s.room, wallHeight: s.wallHeight, modules: s.modules, armStyle: s.armStyle, fabric: s.fabric }
+  return { room: s.room, openings: s.openings, wallHeight: s.wallHeight, modules: s.modules, armStyle: s.armStyle, fabric: s.fabric }
 }
 
 /** First spot (scanning from the top-left, or nearest to `prefer`) where a w x h box fits inside the room without overlaps. */
 function freeSpot(s: Design, w: number, h: number, prefer?: Pt): Pt {
-  const rects: Rect[] = s.modules.map(footprint)
+  const swings = s.openings.map((o) => doorSwing(o, s.room)).filter((r): r is Rect => r !== null)
+  const rects: Rect[] = [...s.modules.map(footprint), ...swings]
   const xs = s.room.map((p) => p.x)
   const ys = s.room.map((p) => p.y)
   const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys)
@@ -128,6 +139,7 @@ export const useStore = create<State>((set, get) => ({
   fabricImage: null,
   toast: null,
   exportPreview: null,
+  dragOpenings: null,
   past: [],
   future: [],
 
@@ -257,15 +269,41 @@ export const useStore = create<State>((set, get) => ({
 
   snapshot: () => set((st) => ({ past: [...st.past.slice(-60), pick(st)], future: [] })),
 
-  setRoom: (pts, record = true) => {
+  setRoom: (pts, record = true, base) => {
     const clean = record ? normalizeRoom(pts) : pts
     if (!isValidRoom(clean)) return
-    if (record) get().commit({ room: clean })
-    else set({ room: clean })
+    const s = get()
+    const from = base ?? s.room
+    // Openings are re-attached from where they were before this change (the drag start for live drags).
+    const openings = reattachOpenings(base ? (s.dragOpenings ?? s.openings) : s.openings, from, clean)
+    if (record) get().commit({ room: clean, openings })
+    else set({ room: clean, openings })
   },
 
+  addOpening: (kind, wall) => {
+    const s = get()
+    const w = walls(s.room)[wall]
+    if (!w) return
+    const width = OPENING_DEFAULTS[kind].width
+    const o = fitOpening({ id: uid(), kind, wall, width, offset: (w.length - width) / 2 }, s.room)
+    if (!o) return s.showToast('That wall is too short for a ' + kind + '.')
+    get().commit({ openings: [...s.openings, o] })
+  },
+
+  updateOpening: (id, patch) => {
+    const s = get()
+    const openings = s.openings.flatMap((o) => {
+      if (o.id !== id) return [o]
+      const f = fitOpening({ ...o, ...patch }, s.room)
+      return f ? [f] : [o]
+    })
+    get().commit({ openings })
+  },
+
+  removeOpening: (id) => get().commit({ openings: get().openings.filter((o) => o.id !== id) }),
+
   loadDesign: (d) => {
-    get().commit({ ...defaultDesign, ...d })
+    get().commit({ ...defaultDesign, ...d, openings: d.openings ?? [] })
     set({ selected: [], selectedWall: null })
   },
 }))
@@ -278,11 +316,12 @@ useStore.subscribe((s) => {
   }
 })
 
-export function moduleIssues(modules: Placed[], room: Pt[]): Set<string> {
+export function moduleIssues(modules: Placed[], room: Pt[], openings: Opening[] = []): Set<string> {
   const bad = new Set<string>()
   const rects = modules.map(footprint)
+  const swings = openings.map((o) => doorSwing(o, room)).filter((r): r is Rect => r !== null)
   modules.forEach((m, i) => {
-    if (!rectInsideRoom(rects[i], room)) bad.add(m.uid)
+    if (!rectInsideRoom(rects[i], room) || swings.some((r) => rectsOverlap(r, rects[i]))) bad.add(m.uid)
     for (let j = i + 1; j < modules.length; j++) {
       if (rectsOverlap(rects[i], rects[j])) {
         bad.add(m.uid)

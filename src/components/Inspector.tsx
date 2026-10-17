@@ -29,7 +29,7 @@ function NumberField({ label, value, onCommit, min = 1, step = 1 }: { label: str
 
 function SelectionPanel() {
   const s = useStore()
-  const issues = moduleIssues(s.modules, s.room)
+  const issues = moduleIssues(s.modules, s.room, s.openings)
   const group = s.modules.filter((m) => s.selected.includes(m.uid))
   const b = boundsOf(group.map(footprint))!
   const one = group.length === 1 ? group[0] : null
@@ -62,7 +62,7 @@ function SelectionPanel() {
           </table>
         </>
       )}
-      {group.some((m) => issues.has(m.uid)) && <p className="warn">Overlaps another module or a wall.</p>}
+      {group.some((m) => issues.has(m.uid)) && <p className="warn">Overlaps another module, a wall or a door swing.</p>}
       <div className="row">
         <NumberField label="Left edge (cm)" value={b.x0} min={-10000} onCommit={(v) => moveTo(v - b.x0, 0)} />
         <NumberField label="Top edge (cm)" value={b.y0} min={-10000} onCommit={(v) => moveTo(0, v - b.y0)} />
@@ -83,7 +83,7 @@ function SelectionPanel() {
 
 function CouchPanel() {
   const s = useStore()
-  const issues = moduleIssues(s.modules, s.room)
+  const issues = moduleIssues(s.modules, s.room, s.openings)
   const sofa = s.modules.filter((m) => MODULE_BY_ID[m.defId].kind !== 'footstool')
   const b = boundsOf(sofa.map(footprint))
   const seats = sofa.reduce((n, m) => n + MODULE_BY_ID[m.defId].seats, 0)
@@ -126,7 +126,7 @@ function CouchPanel() {
               }
             }}>{copied ? 'Copied ✓' : 'Copy parts list'}</button>
           </div>
-          {issues.size > 0 && <p className="warn">{issues.size} module{issues.size > 1 ? 's' : ''} overlap or stick through a wall (shown in red).</p>}
+          {issues.size > 0 && <p className="warn">{issues.size} module{issues.size > 1 ? 's' : ''} overlap, stick through a wall or block a door (shown in red).</p>}
         </>
       )}
       <h3>Mio's ready-made sofas</h3>
@@ -186,13 +186,29 @@ function RoomPanel() {
               {canAlign(2) && <button onClick={() => tryRoom(alignWall(s.room, sel.i, 2))} title="Remove the step after this wall">Line up with wall {((sel.i + 2) % n) + 1}</button>}
             </div>
           )}
-          <p className="hint small">Changing a length moves the next wall. Lining a wall up with its parallel neighbour removes the step between them.</p>
+          <div className="btns">
+            <button onClick={() => s.addOpening('door', sel.i)}>Add door</button>
+            <button onClick={() => s.addOpening('window', sel.i)}>Add window</button>
+          </div>
+          {s.openings.filter((o) => o.wall === sel.i).map((o) => (
+            <div key={o.id} className="opening">
+              <div className="opening-head">
+                <b>{o.kind === 'door' ? 'Door' : 'Window'}</b>
+                <button className="link danger-link" onClick={() => s.removeOpening(o.id)}>Remove</button>
+              </div>
+              <div className="row">
+                <NumberField label="Width (cm)" value={o.width} min={30} onCommit={(v) => s.updateOpening(o.id, { width: v })} />
+                <NumberField label="From wall start (cm)" value={o.offset} min={0} onCommit={(v) => s.updateOpening(o.id, { offset: v })} />
+              </div>
+            </div>
+          ))}
+          <p className="hint small">Changing a length moves the next wall. Lining a wall up with its parallel neighbour removes the step between them. Distances along a wall count from the corner it starts at (marked ●).</p>
         </div>
       )}
       <ol className="walls">
         {ws.map((w) => (
           <li key={w.i} className={s.selectedWall === w.i ? 'on' : ''} onClick={() => s.set({ selectedWall: w.i })}>
-            Wall {w.i + 1} <span>{w.horizontal ? '↔' : '↕'} {Math.round(w.length)} cm</span>
+            Wall {w.i + 1}{s.openings.some((o) => o.wall === w.i) && <em className="tag">{s.openings.filter((o) => o.wall === w.i).map((o) => (o.kind === 'door' ? 'door' : 'window')).join(', ')}</em>} <span>{w.horizontal ? '↔' : '↕'} {Math.round(w.length)} cm</span>
           </li>
         ))}
       </ol>
@@ -241,7 +257,7 @@ function FilePanel() {
   const file = useRef<HTMLInputElement>(null)
   const [confirmClear, setConfirmClear] = useState(false)
   const exportJson = () => {
-    const d: Design = { room: s.room, wallHeight: s.wallHeight, modules: s.modules, armStyle: s.armStyle, fabric: s.fabric }
+    const d: Design = { room: s.room, openings: s.openings, wallHeight: s.wallHeight, modules: s.modules, armStyle: s.armStyle, fabric: s.fabric }
     s.set({ exportPreview: { kind: 'text', data: JSON.stringify(d, null, 2), name: 'rossi-design.json', title: 'Design file' } })
   }
   return (

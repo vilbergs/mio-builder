@@ -4,7 +4,7 @@ import { useStore, moduleIssues } from '../store'
 import { MODULE_BY_ID } from '../data/modules'
 import { moduleParts, type Part } from '../model/parts'
 import {
-  footprint, localToPlan, walls, moveWall, snapCenter, snapGroupDelta, boundsOf, polygonArea, isValidRoom, wallClearance,
+  footprint, localToPlan, walls, moveWall, openingEnds, fitOpening, type Opening, snapCenter, snapGroupDelta, boundsOf, polygonArea, isValidRoom, wallClearance,
   type Placed, type Pt, type Rect,
 } from '../model/geometry'
 import { shade } from '../model/color'
@@ -18,6 +18,7 @@ type Drag =
   | { kind: 'wall'; i: number; start: Pt; base: Pt[] }
   | { kind: 'pan'; sx: number; sy: number; vb: VB }
   | { kind: 'pinch'; dist: number; mid: Pt; vb: VB }
+  | { kind: 'opening'; id: string; t0: number; offset0: number; moved: boolean }
 
 interface VB {
   x: number
@@ -51,7 +52,7 @@ export function Plan2D() {
   const [drag, setDrag] = useState<Drag | null>(null)
   const [hoverWall, setHoverWall] = useState<number | null>(null)
   const sketch = s.style === 'sketch'
-  const issues = useMemo(() => moduleIssues(s.modules, s.room), [s.modules, s.room])
+  const issues = useMemo(() => moduleIssues(s.modules, s.room, s.openings), [s.modules, s.room, s.openings])
   const ws = useMemo(() => walls(s.room), [s.room])
 
   // Fit the room on first render and when the room changes shape a lot.
@@ -110,11 +111,25 @@ export function Plan2D() {
     s.snapshot()
   }
 
+  const alongWall = (o: Opening, p: Pt) => {
+    const w = ws[o.wall]
+    return ((p.x - w.a.x) * (w.b.x - w.a.x) + (p.y - w.a.y) * (w.b.y - w.a.y)) / w.length
+  }
+
+  const startOpening = (e: React.PointerEvent, o: Opening) => {
+    if (s.edit !== 'room') return
+    e.stopPropagation()
+    ;(e.target as Element).setPointerCapture?.(e.pointerId)
+    s.set({ selectedWall: o.wall, selected: [] })
+    s.snapshot()
+    setDrag({ kind: 'opening', id: o.id, t0: alongWall(o, toPlan(e)), offset0: o.offset, moved: false })
+  }
+
   const startWall = (e: React.PointerEvent, i: number) => {
     if (s.edit !== 'room') return
     e.stopPropagation()
     ;(e.target as Element).setPointerCapture?.(e.pointerId)
-    s.set({ selectedWall: i, selected: [] })
+    s.set({ selectedWall: i, selected: [], dragOpenings: s.openings })
     setDrag({ kind: 'wall', i, start: toPlan(e), base: s.room })
   }
 
@@ -158,6 +173,14 @@ export function Plan2D() {
       return
     }
     const p = toPlan(e)
+    if (drag.kind === 'opening') {
+      const o = s.openings.find((x) => x.id === drag.id)
+      if (!o) return
+      const f = fitOpening({ ...o, offset: Math.round(drag.offset0 + alongWall(o, p) - drag.t0) }, s.room)
+      if (f) s.set({ openings: s.openings.map((x) => (x.id === o.id ? f : x)) })
+      if (!drag.moved) setDrag({ ...drag, moved: true })
+      return
+    }
     if (drag.kind === 'module') {
       const ids = new Set(drag.base.map((m) => m.uid))
       const others = s.modules.filter((x) => !ids.has(x.uid)).map(footprint)
@@ -179,7 +202,7 @@ export function Plan2D() {
         if (Math.abs(v - target) < thr) delta = (v - cur) * (w.horizontal ? w.inward.y : w.inward.x)
       }
       const next = moveWall(drag.base, drag.i, delta)
-      if (isValidRoom(next)) s.setRoom(next, false)
+      if (isValidRoom(next)) s.setRoom(next, false, drag.base)
     }
   }
 
@@ -190,12 +213,11 @@ export function Plan2D() {
       return
     }
     if (drag?.kind === 'wall') {
-      const room = useStore.getState().room
-      useStore.setState({ room: drag.base })
+      const { room, dragOpenings } = useStore.getState()
+      useStore.setState({ room: drag.base, openings: dragOpenings ?? [], dragOpenings: null })
       if (room !== drag.base) s.setRoom(room, true)
-      else s.set({ room: drag.base })
     }
-    if (drag?.kind === 'module' && !drag.moved) {
+    if ((drag?.kind === 'module' || drag?.kind === 'opening') && !drag.moved) {
       // A click without a move shouldn't leave an undo step behind.
       useStore.setState((st) => ({ past: st.past.slice(0, -1) }))
     }
@@ -317,6 +339,11 @@ export function Plan2D() {
     )
   }
 
+  const openingProps = (o: Opening) =>
+    s.edit === 'room'
+      ? { onPointerDown: (e: React.PointerEvent) => startOpening(e, o), style: { cursor: 'grab' } as React.CSSProperties }
+      : { pointerEvents: 'none' as const }
+
   const area = Math.abs(polygonArea(s.room)) / 10000
   const selBounds = boundsOf(s.modules.filter((m) => s.selected.includes(m.uid)).map(footprint))
   const clearance: { key: string; a: Pt; b: Pt; label: string; vertical: boolean }[] = []
@@ -377,6 +404,38 @@ export function Plan2D() {
         <path d={outerPath + roomPath} fillRule="evenodd" fill={sketch ? '#5a564d' : '#3d3d3d'} opacity={sketch ? 0.85 : 1} />
         <path d={roomPath} fill={sketch ? '#fbf8f0' : 'url(#planks)'} stroke={ink} strokeWidth={0.6 * k} />
         {sketch && <path d={roomPath} fill="url(#grid10)" opacity={0.6} />}
+
+        {s.openings.map((o) => {
+          const e = openingEnds(o, s.room)
+          if (!e) return null
+          const n = e.wall.inward
+          const T = WALL_T
+          const band = `M${e.a.x} ${e.a.y}L${e.b.x} ${e.b.y}L${e.b.x - n.x * T} ${e.b.y - n.y * T}L${e.a.x - n.x * T} ${e.a.y - n.y * T}Z`
+          const stroke = sketch ? '#3b3a36' : '#2a2a2a'
+          if (o.kind === 'door') {
+            const tip = { x: e.a.x + n.x * o.width, y: e.a.y + n.y * o.width }
+            // Sweep direction: from the far jamb round to the open leaf.
+            const cross = (e.b.x - e.a.x) * n.y - (e.b.y - e.a.y) * n.x
+            return (
+              <g key={o.id} {...openingProps(o)}>
+                <path d={band} fill={sketch ? '#fbf8f0' : 'url(#planks)'} />
+                <line x1={e.a.x} y1={e.a.y} x2={tip.x} y2={tip.y} stroke={stroke} strokeWidth={2.2 * k} />
+                <path d={`M${e.b.x} ${e.b.y}A${o.width} ${o.width} 0 0 ${cross > 0 ? 0 : 1} ${tip.x} ${tip.y}`} fill="none" stroke={stroke} strokeWidth={0.8 * k} strokeDasharray={`${4 * k} ${3 * k}`} />
+              </g>
+            )
+          }
+          const mid = (t: number) => `M${e.a.x - n.x * T * t} ${e.a.y - n.y * T * t}L${e.b.x - n.x * T * t} ${e.b.y - n.y * T * t}`
+          return (
+            <g key={o.id} {...openingProps(o)}>
+              <path d={band} fill={sketch ? '#fdfcf8' : '#e8f1f6'} stroke={stroke} strokeWidth={0.8 * k} />
+              <path d={mid(0.35) + mid(0.65)} stroke={sketch ? '#3b3a36' : '#7aa6c2'} strokeWidth={0.8 * k} />
+            </g>
+          )
+        })}
+
+        {s.edit === 'room' && s.selectedWall !== null && ws[s.selectedWall] && (
+          <circle cx={ws[s.selectedWall].a.x} cy={ws[s.selectedWall].a.y} r={5 * k} fill="#2f6fed" stroke="#fff" strokeWidth={1.5 * k} pointerEvents="none" />
+        )}
 
         {s.edit === 'room' && ws.map((w) => {
           const hot = s.selectedWall === w.i || hoverWall === w.i

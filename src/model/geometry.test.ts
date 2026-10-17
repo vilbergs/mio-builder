@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   addNotch, alignWall, footprint, isValidRoom, localToPlan, mirrorPlaced, moveWall, normalizeRoom, polygonArea,
-  rectInsideRoom, rotatePlacedAbout, ROOM_PRESETS, setWallLength, snapCenter, walls, wallClearance, type Placed,
+  rectInsideRoom, rotatePlacedAbout, ROOM_PRESETS, setWallLength, snapCenter, walls, wallClearance, reattachOpenings, fitOpening, type Placed,
 } from './geometry'
 import { MODULES } from '../data/modules'
 import { moduleParts } from './parts'
@@ -115,5 +115,27 @@ describe('presets', () => {
           expect(overlap, `${p.name}: ${i} and ${j}`).toBe(false)
         }
     }
+  })
+})
+
+describe('doors and windows', () => {
+  const door = { id: 'd', kind: 'door' as const, wall: 0, offset: 100, width: 90 }
+
+  it('keeps an opening on a wall that is dragged', () => {
+    const moved = moveWall(rect, 0, 30)
+    expect(reattachOpenings([door], rect, moved)).toEqual([door])
+  })
+
+  it('follows the wall when a notch shifts the wall numbers', () => {
+    const onBottom = { ...door, wall: 2, offset: 50 } // bottom wall runs right to left
+    const notched = addNotch(rect, 0, 60)
+    const [o] = reattachOpenings([onBottom], rect, notched)
+    expect(o.wall).toBe(6)
+    expect(o.offset).toBe(50)
+  })
+
+  it('shrinks an opening that no longer fits its wall', () => {
+    const big = fitOpening({ ...door, width: 900 }, rect)!
+    expect(big.offset + big.width).toBeLessThanOrEqual(520)
   })
 })

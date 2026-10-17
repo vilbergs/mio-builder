@@ -317,3 +317,82 @@ export function alignWall(pts: Pt[], i: number, offset: -2 | 2): Pt[] {
   const along = w.horizontal ? w.inward.y : w.inward.x
   return moveWall(pts, i, (target - cur) * along)
 }
+
+// ---------- doors and windows ----------
+
+export interface Opening {
+  id: string
+  kind: 'door' | 'window'
+  wall: number // index of the wall it sits in
+  offset: number // cm from the wall's start point to the opening's near edge
+  width: number
+}
+
+export const OPENING_DEFAULTS = {
+  door: { width: 90, top: 210 },
+  window: { width: 120, sill: 90, top: 210 },
+}
+
+/** Clamp an opening so it fits inside its wall. Returns null if the wall is gone or too short. */
+export function fitOpening(o: Opening, room: Pt[]): Opening | null {
+  const w = walls(room)[o.wall]
+  if (!w || w.length < 20) return null
+  const width = Math.min(o.width, w.length - 10)
+  const offset = Math.max(5, Math.min(o.offset, w.length - 5 - width))
+  return { ...o, width: Math.round(width), offset: Math.round(offset) }
+}
+
+/**
+ * Re-attach openings after the room changed shape. An opening stays on the wall whose line still
+ * contains its centre; failing that it follows the wall with the same index (a dragged wall).
+ */
+export function reattachOpenings(openings: Opening[], before: Pt[], after: Pt[]): Opening[] {
+  const oldWalls = walls(before)
+  const newWalls = walls(after)
+  const out: Opening[] = []
+  for (const o of openings) {
+    const w = oldWalls[o.wall]
+    if (!w) continue
+    const dir = { x: (w.b.x - w.a.x) / w.length, y: (w.b.y - w.a.y) / w.length }
+    const mid = o.offset + o.width / 2
+    const c = { x: w.a.x + dir.x * mid, y: w.a.y + dir.y * mid }
+    let placed: Opening | null = null
+    for (const n of newWalls) {
+      if (n.horizontal !== w.horizontal) continue
+      const onLine = n.horizontal ? Math.abs(n.a.y - c.y) < 0.5 : Math.abs(n.a.x - c.x) < 0.5
+      if (!onLine) continue
+      const t = n.horizontal ? (c.x - n.a.x) / (n.b.x - n.a.x) : (c.y - n.a.y) / (n.b.y - n.a.y)
+      if (t <= 0 || t >= 1) continue
+      placed = fitOpening({ ...o, wall: n.i, offset: t * n.length - o.width / 2 }, after)
+      break
+    }
+    if (!placed && newWalls[o.wall] && newWalls[o.wall].horizontal === w.horizontal && newWalls.length === oldWalls.length) {
+      placed = fitOpening(o, after)
+    }
+    if (placed) out.push(placed)
+  }
+  return out
+}
+
+/** The opening's two end points on the wall line, in plan coordinates. */
+export function openingEnds(o: Opening, room: Pt[]): { a: Pt; b: Pt; wall: Wall } | null {
+  const w = walls(room)[o.wall]
+  if (!w) return null
+  const dx = (w.b.x - w.a.x) / w.length, dy = (w.b.y - w.a.y) / w.length
+  return {
+    a: { x: w.a.x + dx * o.offset, y: w.a.y + dy * o.offset },
+    b: { x: w.a.x + dx * (o.offset + o.width), y: w.a.y + dy * (o.offset + o.width) },
+    wall: w,
+  }
+}
+
+/** The floor area a door needs to swing open into the room. */
+export function doorSwing(o: Opening, room: Pt[]): Rect | null {
+  if (o.kind !== 'door') return null
+  const e = openingEnds(o, room)
+  if (!e) return null
+  const n = e.wall.inward
+  const xs = [e.a.x, e.b.x, e.a.x + n.x * o.width, e.b.x + n.x * o.width]
+  const ys = [e.a.y, e.b.y, e.a.y + n.y * o.width, e.b.y + n.y * o.width]
+  return { x0: Math.min(...xs), y0: Math.min(...ys), x1: Math.max(...xs), y1: Math.max(...ys) }
+}

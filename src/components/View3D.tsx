@@ -5,7 +5,7 @@ import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeom
 import { useStore, moduleIssues } from '../store'
 import { MODULE_BY_ID } from '../data/modules'
 import { moduleParts, type Part } from '../model/parts'
-import { footprint, walls, snapGroupDelta, pointInPolygon, type Placed, type Pt } from '../model/geometry'
+import { footprint, walls, snapGroupDelta, pointInPolygon, OPENING_DEFAULTS, type Placed, type Pt } from '../model/geometry'
 import { fabricTextures, woodTexture, imageTexture } from '../three/textures'
 import { shade } from '../model/color'
 import { requestCamera, type CameraView } from '../exportImage'
@@ -256,21 +256,73 @@ export function View3D() {
     }
 
     const outer = outerRing(s.room)
-    const h = s.wallHeight * M
     const wallMat = sketch
       ? new THREE.MeshLambertMaterial({ color: '#fdfbf6' })
       : new THREE.MeshStandardMaterial({ color: '#f1eee8', roughness: 0.95 })
+    const glassMat = new THREE.MeshStandardMaterial({ color: '#cfe3ee', transparent: true, opacity: sketch ? 0.25 : 0.35, roughness: 0.1 })
+    const frameMat = sketch ? new THREE.MeshLambertMaterial({ color: '#fdfbf6' }) : new THREE.MeshStandardMaterial({ color: '#e9e5de', roughness: 0.6 })
     walls(s.room).forEach((w) => {
       const j = (w.i + 1) % s.room.length
-      const quad = [s.room[w.i], s.room[j], outer[j], outer[w.i]]
-      const geo = new THREE.ExtrudeGeometry(shapeOf(quad), { depth: h, bevelEnabled: false })
-      geo.rotateX(-Math.PI / 2)
-      const mesh = new THREE.Mesh(geo, wallMat)
-      mesh.castShadow = !sketch
-      mesh.receiveShadow = true
+      const dir = { x: (w.b.x - w.a.x) / w.length, y: (w.b.y - w.a.y) / w.length }
+      const at = (t: number) => ({ x: w.a.x + dir.x * t, y: w.a.y + dir.y * t })
+      const out = (t: number) => (t <= 0 ? outer[w.i] : t >= w.length ? outer[j] : { x: at(t).x - w.inward.x * WALL_T, y: at(t).y - w.inward.y * WALL_T })
+      // Pieces of this wall: [from, to] along it and [bottom, top] in height (cm).
+      const pieces: [number, number, number, number][] = []
+      let t = 0
+      const ops = s.openings.filter((o) => o.wall === w.i).sort((a, b) => a.offset - b.offset)
+      for (const o of ops) {
+        if (o.offset > t) pieces.push([t, o.offset, 0, s.wallHeight])
+        const top = Math.min(OPENING_DEFAULTS[o.kind].top, s.wallHeight - 1)
+        pieces.push([o.offset, o.offset + o.width, top, s.wallHeight])
+        if (o.kind === 'window') pieces.push([o.offset, o.offset + o.width, 0, OPENING_DEFAULTS.window.sill])
+        t = o.offset + o.width
+      }
+      if (t < w.length) pieces.push([t, w.length, 0, s.wallHeight])
+
       const g = new THREE.Group()
-      g.add(mesh)
-      if (sketch) g.add(new THREE.LineSegments(new THREE.EdgesGeometry(geo), new THREE.LineBasicMaterial({ color: '#3b3a36' })))
+      for (const [t0, t1, z0, z1] of pieces) {
+        const quad = [at(t0), at(t1), out(t1), out(t0)]
+        const geo = new THREE.ExtrudeGeometry(shapeOf(quad), { depth: (z1 - z0) * M, bevelEnabled: false })
+        geo.rotateX(-Math.PI / 2)
+        geo.translate(0, z0 * M, 0)
+        const mesh = new THREE.Mesh(geo, wallMat)
+        mesh.castShadow = !sketch
+        mesh.receiveShadow = true
+        g.add(mesh)
+        if (sketch) g.add(new THREE.LineSegments(new THREE.EdgesGeometry(geo), new THREE.LineBasicMaterial({ color: '#3b3a36' })))
+      }
+      for (const o of ops) {
+        const a = at(o.offset), b = at(o.offset + o.width)
+        const mid = { x: (a.x + b.x) / 2 - w.inward.x * WALL_T / 2, y: (a.y + b.y) / 2 - w.inward.y * WALL_T / 2 }
+        const angle = Math.atan2(-(b.y - a.y), b.x - a.x)
+        if (o.kind === 'window') {
+          const h = OPENING_DEFAULTS.window.top - OPENING_DEFAULTS.window.sill
+          const pane = new THREE.Mesh(new THREE.BoxGeometry(o.width * M, h * M, 0.01), glassMat)
+          pane.position.set(mid.x * M, (OPENING_DEFAULTS.window.sill + h / 2) * M, mid.y * M)
+          pane.rotation.y = angle
+          g.add(pane)
+          const sill = new THREE.Mesh(new THREE.BoxGeometry((o.width + 6) * M, 0.03, (WALL_T + 6) * M), frameMat)
+          sill.position.set((mid.x + w.inward.x * 3) * M, OPENING_DEFAULTS.window.sill * M + 0.015, (mid.y + w.inward.y * 3) * M)
+          sill.rotation.y = angle
+          g.add(sill)
+        } else {
+          // Door leaf standing ajar into the room, hinged at the opening's start.
+          const leaf = new THREE.Mesh(new THREE.BoxGeometry(o.width * M, (OPENING_DEFAULTS.door.top - 1) * M, 0.04), frameMat)
+          const swing = Math.atan2(-w.inward.y, w.inward.x)
+          const diff = Math.atan2(Math.sin(swing - angle), Math.cos(swing - angle))
+          const open = angle + diff * 0.35
+          leaf.position.set(a.x * M + Math.cos(open) * o.width * M / 2, (OPENING_DEFAULTS.door.top / 2) * M, a.y * M - Math.sin(open) * o.width * M / 2)
+          leaf.rotation.y = open
+          leaf.castShadow = !sketch
+          g.add(leaf)
+          if (sketch) {
+            const e = new THREE.LineSegments(new THREE.EdgesGeometry(leaf.geometry), new THREE.LineBasicMaterial({ color: '#3b3a36' }))
+            e.position.copy(leaf.position)
+            e.rotation.copy(leaf.rotation)
+            g.add(e)
+          }
+        }
+      }
       c.room.add(g)
       c.wallMeshes.push({
         obj: g,
@@ -291,14 +343,14 @@ export function View3D() {
     c.sun.target.position.set(cx, 0, cz)
     Object.assign(c.sun.shadow.camera, { left: -span * 1.6, right: span * 1.6, top: span * 1.6, bottom: -span * 1.6, near: 0.5, far: 20 })
     c.sun.shadow.camera.updateProjectionMatrix()
-  }, [s.room, s.wallHeight, sketch])
+  }, [s.room, s.openings, s.wallHeight, sketch])
 
   // ----- couch -----
   useEffect(() => {
     const c = ctx.current
     if (!c) return
     disposeGroup(c.couch)
-    const issues = moduleIssues(s.modules, s.room)
+    const issues = moduleIssues(s.modules, s.room, s.openings)
     const tex = sketch ? null : s.fabricImage ? { map: imageTexture(s.fabricImage), bumpMap: null } : fabricTextures(s.fabric)
     const mats = new Map<string, THREE.Material>()
     const matFor = (kind: Part['kind'], bad: boolean): THREE.Material => {
@@ -357,7 +409,7 @@ export function View3D() {
       }
       c.couch.add(g)
     })
-  }, [s.modules, s.room, s.armStyle, s.fabric, s.fabricImage, s.selected, sketch])
+  }, [s.modules, s.room, s.openings, s.armStyle, s.fabric, s.fabricImage, s.selected, sketch])
 
   return (
     <>
