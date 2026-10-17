@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import rough from 'roughjs'
 import { useStore, moduleIssues, type Design } from '../store'
 import { MODULE_BY_ID } from '../data/modules'
-import { moduleParts, type Part } from '../model/parts'
+import { moduleParts, pillowParts, type Part } from '../model/parts'
 import {
   footprint, localToPlan, walls, moveWall, normalizeRoom, openingEnds, fitOpening, type Opening, snapCenter, snapGroupDelta, boundsOf, polygonArea, isValidRoom, wallClearance,
   type Placed, type Pt, type Rect,
@@ -279,13 +279,14 @@ export function Plan2D() {
       case 'arm': return shade(fabric, -0.05)
       case 'backCushion': return shade(fabric, 0.02)
       case 'seat': return shade(fabric, 0.1)
+      case 'pillow': return shade(fabric, 0.04)
     }
   }
 
   const renderModule = (m: Placed) => {
     const def = MODULE_BY_ID[m.defId]
     const r = footprint(m)
-    const parts = moduleParts(def, s.armStyle).filter((p) => p.kind !== 'leg' && p.kind !== 'base').sort((a, b) => a.z1 - b.z1)
+    const parts = [...moduleParts(def, s.armStyle), ...(s.showPillows ? pillowParts(def) : [])].filter((p) => p.kind !== 'leg' && p.kind !== 'base').sort((a, b) => a.z1 - b.z1)
     const sel = s.selected.includes(m.uid)
     const bad = issues.has(m.uid)
     const seed = seedOf(m.uid)

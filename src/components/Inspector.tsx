@@ -1,8 +1,13 @@
 import { useRef, useState } from 'react'
 import { useStore, moduleIssues, type Design } from '../store'
-import { MODULE_BY_ID, FABRICS, ROSSI } from '../data/modules'
+import { MODULE_BY_ID, FABRICS, ROSSI, FABRIC_GROUPS } from '../data/modules'
+import { quote, currentPrice, saleActive, kr } from '../model/pricing'
 import { PRESETS } from '../data/presets'
+import { hasPhotos } from '../data/photos'
+import { ModuleImage } from './Palette'
 import { footprint, boundsOf, walls, setWallLength, addNotch, alignWall, normalizeRoom, polygonArea, ROOM_PRESETS, isValidRoom } from '../model/geometry'
+
+const sale = saleActive()
 
 const refit = () => setTimeout(() => window.dispatchEvent(new Event('rossi-fit')), 50)
 
@@ -43,6 +48,7 @@ function SelectionPanel() {
         <>
           <h2>{def.name}</h2>
           <p className="sv">{def.nameSv}</p>
+          <ModuleImage id={def.id} className="photo big" />
           <table className="specs">
             <tbody>
               <tr><td>Width</td><td>{def.width} cm</td></tr>
@@ -50,6 +56,8 @@ function SelectionPanel() {
               <tr><td>Height</td><td>{def.height} cm</td></tr>
               {def.kind !== 'footstool' && <tr><td>Seat height</td><td>{ROSSI.seatHeight} cm</td></tr>}
               <tr><td>Footprint</td><td>{((def.width * def.depth) / 10000).toFixed(2)} m²</td></tr>
+              {def.pillows > 0 && <tr><td>Pillows included</td><td>{def.pillows} × 50×50</td></tr>}
+              <tr><td>Price ({FABRIC_GROUPS.find((g) => g.id === s.fabricGroup)!.name})</td><td>{kr(currentPrice(def.price, s.fabricGroup, sale))}</td></tr>
             </tbody>
           </table>
         </>
@@ -83,6 +91,32 @@ function SelectionPanel() {
   )
 }
 
+function PriceBox() {
+  const s = useStore()
+  const q = quote(s.modules.map((m) => m.defId), s.fabricGroup, sale)
+  const onSale = q.now < q.regular
+  return (
+    <div className="price">
+      <div className="seg small-seg" role="group" aria-label="Fabric">
+        {FABRIC_GROUPS.map((g) => (
+          <button key={g.id} className={s.fabricGroup === g.id ? 'on' : ''} onClick={() => s.set({ fabricGroup: g.id })}>{g.name}</button>
+        ))}
+      </div>
+      <div className="price-total">
+        <b>{kr(q.now)}</b>
+        {onSale && <s>{kr(q.regular)}</s>}
+      </div>
+      {q.preset && q.separately && (
+        <p className="hint small">Priced as Mio's <i>{q.preset.name}</i> package; the same modules bought one by one cost {kr(q.separately.now)}.</p>
+      )}
+      <p className="hint small">
+        {onSale ? `Season sale price in ${s.fabricGroup === 'zoom' ? 'Zoom' : 'Alex'}, valid to 19 Oct 2026. ` : sale ? 'The season sale (to 19 Oct 2026) covers only Zoom and Alex. ' : ''}
+        Pick-up prices from Mio's printed price list; delivery extra.
+      </p>
+    </div>
+  )
+}
+
 function CouchPanel() {
   const s = useStore()
   const issues = moduleIssues(s.modules, s.room, s.openings)
@@ -97,7 +131,8 @@ function CouchPanel() {
 
   const list = () =>
     [...counts].map(([id, n]) => `${n} × Rossi ${MODULE_BY_ID[id].nameSv} (${MODULE_BY_ID[id].width}×${MODULE_BY_ID[id].depth} cm)`).join('\n') +
-    `\nArmstöd ${s.armStyle}` + (b ? `\nTotal ${Math.round(b.x1 - b.x0)} × ${Math.round(b.y1 - b.y0)} cm` : '')
+    `\nArmstöd ${s.armStyle} · Tyg ${FABRIC_GROUPS.find((g) => g.id === s.fabricGroup)!.name}` + (b ? `\nTotal ${Math.round(b.x1 - b.x0)} × ${Math.round(b.y1 - b.y0)} cm` : '') +
+    `\nPris ${kr(quote(s.modules.map((m) => m.defId), s.fabricGroup, sale).now)}`
 
   return (
     <section>
@@ -116,6 +151,7 @@ function CouchPanel() {
               <li key={id}><span>{n} ×</span> {MODULE_BY_ID[id].nameSv} <em>{MODULE_BY_ID[id].width}×{MODULE_BY_ID[id].depth}</em></li>
             ))}
           </ul>
+          <PriceBox />
           <div className="btns">
             <button onClick={() => s.selectAll()}>Select all</button>
             <button onClick={async () => {
@@ -134,7 +170,11 @@ function CouchPanel() {
       <h3>Mio's ready-made sofas</h3>
       <div className="presets">
         {PRESETS.map((p) => (
-          <button key={p.id} onClick={() => s.addPreset(p.id)} title={p.note ?? ''}>{p.name}</button>
+          <button key={p.id} onClick={() => s.addPreset(p.id)} title={`Mio lists ${p.listed} cm`}>
+            <ModuleImage id={p.id} />
+            <span>{p.name}</span>
+            <em>{p.listed} · {kr(currentPrice(p.price, s.fabricGroup, sale))}</em>
+          </button>
         ))}
       </div>
       <p className="hint small">Keys: R rotate · M mirror · Del delete · arrows nudge (Shift = 10 cm) · Ctrl+A select all · Ctrl+Z undo.</p>
@@ -225,9 +265,19 @@ function StylePanel() {
     <section>
       <h2>Look</h2>
       <div className="seg">
-        <button className={s.armStyle === 'A' ? 'on' : ''} onClick={() => s.commit({ armStyle: 'A' })} title="Armrest A: shorter, the seat cushion runs past it">Armrest A</button>
+        <button className={s.armStyle === 'A' ? 'on' : ''} onClick={() => s.commit({ armStyle: 'A' })} title="Armrest A: stops short of the front so the seat cushion runs past it">Armrest A</button>
         <button className={s.armStyle === 'B' ? 'on' : ''} onClick={() => s.commit({ armStyle: 'B' })} title="Armrest B: classic, wraps the whole seat cushion">Armrest B</button>
       </div>
+      {hasPhotos && (
+        <div className="arm-photos">
+          <ModuleImage id={s.armStyle === 'A' ? 'armA' : 'armB'} className="photo" />
+          <p className="hint small">{s.armStyle === 'A' ? 'A stops short of the front, so the seat cushion runs past it.' : 'B is the classic armrest that wraps the whole seat cushion.'} Both are 16 cm wide.</p>
+        </div>
+      )}
+      <label className="check">
+        <input id="show-pillows" type="checkbox" checked={s.showPillows} onChange={(e) => s.set({ showPillows: e.target.checked })} />
+        Show the included 50×50 pillows
+      </label>
       <div className="swatches">
         {FABRICS.map((f) => (
           <button key={f.id} className={`swatch ${s.fabric === f.color && !s.fabricImage ? 'on' : ''}`} style={{ background: f.color }} title={f.name}
@@ -249,7 +299,7 @@ function StylePanel() {
         rd.readAsDataURL(f)
         e.target.value = ''
       }} />
-      <p className="hint small">Colours are approximate. A close-up photo of a Mio fabric swatch works best as a texture in Realistic mode.</p>
+      <p className="hint small">Colours are sampled from Mio's product photos, so treat them as a guide. A close-up photo of a fabric swatch works best as a texture in Realistic mode.</p>
     </section>
   )
 }

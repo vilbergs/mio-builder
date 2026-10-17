@@ -1,6 +1,8 @@
 import { MODULES, ROSSI, SERIES_URL, SPEC_URL, type ModuleDef } from '../data/modules'
 import { moduleParts } from '../model/parts'
 import { useStore } from '../store'
+import { photoFor } from '../data/photos'
+import { currentPrice, saleActive, kr } from '../model/pricing'
 
 function Thumb({ def }: { def: ModuleDef }) {
   const armStyle = useStore((s) => s.armStyle)
@@ -16,14 +18,23 @@ function Thumb({ def }: { def: ModuleDef }) {
   )
 }
 
+export function ModuleImage({ id, fallback, className = 'photo' }: { id: string; fallback?: React.ReactNode; className?: string }) {
+  const p = photoFor(id)
+  if (!p) return <>{fallback ?? null}</>
+  return <img className={className} src={p.url} alt="" style={p.flip ? { transform: 'scaleX(-1)' } : undefined} draggable={false} />
+}
+
 const GROUPS: { title: string; kinds: ModuleDef['kind'][] }[] = [
   { title: 'Seats', kinds: ['seat'] },
-  { title: 'Corner & chaise', kinds: ['corner', 'chaise'] },
+  { title: 'Corner, chaise & open end', kinds: ['corner', 'chaise', 'openEnd'] },
   { title: 'Footstools', kinds: ['footstool'] },
 ]
 
+const sale = saleActive()
+
 export function Palette() {
   const addModule = useStore((s) => s.addModule)
+  const group = useStore((s) => s.fabricGroup)
   return (
     <aside className="palette">
       <h2>Rossi modules</h2>
@@ -44,9 +55,10 @@ export function Palette() {
                 onClick={() => addModule(m.id)}
                 title={`${m.nameSv} — ${m.width} × ${m.depth} × ${m.height} cm`}
               >
-                <Thumb def={m} />
+                <ModuleImage id={m.id} fallback={<Thumb def={m} />} />
                 <span className="module-name">{m.name}</span>
                 <span className="module-dims">{m.width} × {m.depth} × {m.height}</span>
+                <span className="module-price">{kr(currentPrice(m.price, group, sale))}</span>
               </button>
             ))}
           </div>

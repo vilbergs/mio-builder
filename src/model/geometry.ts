@@ -264,6 +264,8 @@ const MIRROR_VARIANT: Record<string, string> = {
   's15-left': 's15-right', 's15-right': 's15-left',
   's2-left': 's2-right', 's2-right': 's2-left',
   'chaise-left': 'chaise-right', 'chaise-right': 'chaise-left',
+  'chaisesm-left': 'chaisesm-right', 'chaisesm-right': 'chaisesm-left',
+  'open-left': 'open-right', 'open-right': 'open-left',
 }
 const CORNER_MIRROR: Record<Rot, Rot> = { 0: 90, 90: 0, 180: 270, 270: 180 }
 

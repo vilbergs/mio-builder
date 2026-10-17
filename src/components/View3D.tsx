@@ -4,7 +4,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js'
 import { useStore, moduleIssues, type Design } from '../store'
 import { MODULE_BY_ID } from '../data/modules'
-import { moduleParts, type Part } from '../model/parts'
+import { moduleParts, pillowParts, type Part } from '../model/parts'
 import { footprint, walls, snapGroupDelta, pointInPolygon, OPENING_DEFAULTS, type Placed, type Pt } from '../model/geometry'
 import { fabricTextures, woodTexture, imageTexture } from '../three/textures'
 import { shade } from '../model/color'
@@ -360,7 +360,7 @@ export function View3D() {
     if (!c) return
     const issues = moduleIssues(s.modules, s.room, s.openings)
     // While dragging only positions change: move the existing meshes instead of rebuilding them.
-    const sig = JSON.stringify([s.modules.map((m) => [m.uid, m.defId, m.rot]), [...issues], s.selected, s.armStyle, s.fabric, s.fabricImage, sketch])
+    const sig = JSON.stringify([s.modules.map((m) => [m.uid, m.defId, m.rot]), [...issues], s.selected, s.armStyle, s.fabric, s.fabricImage, s.showPillows, sketch])
     if (built.current?.sig === sig && built.current.parent === c.couch && built.current.groups.size === s.modules.length) {
       for (const m of s.modules) built.current.groups.get(m.uid)?.position.set(m.x * M, 0, m.y * M)
       return
@@ -377,9 +377,9 @@ export function View3D() {
       if (sketch) {
         m = new THREE.MeshLambertMaterial({ color: bad ? '#f2c4bd' : kind === 'leg' ? '#6b6760' : '#fbf9f4' })
       } else if (kind === 'leg') {
-        m = new THREE.MeshStandardMaterial({ color: '#2b2724', roughness: 0.5, metalness: 0.2 })
+        m = new THREE.MeshStandardMaterial({ color: '#3a2a20', roughness: 0.55, metalness: 0.05 }) // wengé-stained
       } else {
-        const tint = { base: -0.12, back: -0.06, arm: -0.03, backCushion: 0, seat: 0.04 }[kind]
+        const tint = { base: -0.12, back: -0.06, arm: -0.03, backCushion: 0, seat: 0.04, pillow: -0.02 }[kind]
         m = new THREE.MeshStandardMaterial({
           color: shade('#ffffff', tint),
           map: tex?.map ?? null,
@@ -401,18 +401,24 @@ export function View3D() {
       g.position.set(pm.x * M, 0, pm.y * M)
       g.rotation.y = (-pm.rot * Math.PI) / 180
       const bad = issues.has(pm.uid)
-      for (const p of moduleParts(def, s.armStyle)) {
+      for (const p of [...moduleParts(def, s.armStyle), ...(s.showPillows ? pillowParts(def) : [])]) {
         const w = (p.x1 - p.x0) * M, d = (p.y1 - p.y0) * M, h = (p.z1 - p.z0) * M
         const r = Math.min(p.r * M, Math.min(w, d, h) / 2 - 0.001)
         const geo = sketch || r <= 0.002 ? new THREE.BoxGeometry(w, h, d) : new RoundedBoxGeometry(w, h, d, 4, r)
         const mesh = new THREE.Mesh(geo, matFor(p.kind, bad))
         mesh.position.set(((p.x0 + p.x1) / 2 - def.width / 2) * M, ((p.z0 + p.z1) / 2) * M, ((p.y0 + p.y1) / 2 - def.depth / 2) * M)
+        if (p.kind === 'pillow') {
+          // Lean back against the cushion behind it.
+          if (p.x1 - p.x0 > p.y1 - p.y0) mesh.rotation.x = -0.22
+          else mesh.rotation.z = 0.22
+        }
         mesh.castShadow = !sketch
         mesh.receiveShadow = !sketch
         g.add(mesh)
         if (sketch) {
           const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geo), new THREE.LineBasicMaterial({ color: '#2f2e2a' }))
           edges.position.copy(mesh.position)
+          edges.rotation.copy(mesh.rotation)
           g.add(edges)
         }
       }
@@ -427,7 +433,7 @@ export function View3D() {
       groups.set(pm.uid, g)
     })
     built.current = { sig, groups, parent: c.couch }
-  }, [s.modules, s.room, s.openings, s.armStyle, s.fabric, s.fabricImage, s.selected, sketch])
+  }, [s.modules, s.room, s.openings, s.showPillows, s.armStyle, s.fabric, s.fabricImage, s.selected, sketch])
 
   return (
     <>

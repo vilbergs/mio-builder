@@ -7,6 +7,6 @@ export default defineConfig(({ mode }) => ({
   base: './',
   build:
     mode === 'artifact'
-      ? { outDir: 'dist-artifact', chunkSizeWarningLimit: 2000, rolldownOptions: { output: { codeSplitting: false } } }
+      ? { outDir: 'dist-artifact', chunkSizeWarningLimit: 2000, assetsInlineLimit: 1024 * 1024, rolldownOptions: { output: { codeSplitting: false } } }
       : { chunkSizeWarningLimit: 700 },
 }))

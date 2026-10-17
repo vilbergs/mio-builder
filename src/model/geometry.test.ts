@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import {
   addNotch, alignWall, footprint, isValidRoom, localToPlan, mirrorPlaced, moveWall, normalizeRoom, polygonArea,
-  rectInsideRoom, rotatePlacedAbout, ROOM_PRESETS, setWallLength, snapCenter, walls, wallClearance, reattachOpenings, fitOpening, type Placed,
+  rectInsideRoom, rotatePlacedAbout, boundsOf, ROOM_PRESETS, setWallLength, snapCenter, walls, wallClearance, reattachOpenings, fitOpening, type Placed,
 } from './geometry'
 import { MODULES } from '../data/modules'
 import { moduleParts } from './parts'
 import { PRESETS } from '../data/presets'
+import { quote, saleActive } from './pricing'
 
 const rect = ROOM_PRESETS.rect.pts // 520 x 420
 const L = ROOM_PRESETS.L.pts
@@ -144,5 +145,38 @@ describe('room containment', () => {
   it('rejects a rect bridging the gap between the arms of a U', () => {
     expect(rectInsideRoom({ x0: 100, y0: 50, x1: 600, y1: 100 }, ROOM_PRESETS.U.pts)).toBe(false)
     expect(rectInsideRoom({ x0: 100, y0: 200, x1: 600, y1: 300 }, ROOM_PRESETS.U.pts)).toBe(true)
+  })
+})
+
+describe('prices', () => {
+  it('prices a whole package at Mio’s package price', () => {
+    const p = PRESETS.find((x) => x.id === 'divan4-l')!
+    const q = quote(p.modules.map((m) => m.defId), 'alex', false)
+    expect(q.preset?.name).toMatch(/^4-sits soffa med divan/)
+    expect(q.now).toBe(31990)
+    expect(q.separately!.now).toBeGreaterThan(q.now)
+  })
+
+  it('applies the season sale only to Zoom and Alex, only until 19 October 2026', () => {
+    expect(saleActive(new Date(2026, 9, 19))).toBe(true)
+    expect(saleActive(new Date(2026, 9, 20))).toBe(false)
+    const q = (g: 'zoom' | 'iberia') => quote(['s2-both'], g, true).now
+    expect(q('zoom')).toBe(7995)
+    expect(q('iberia')).toBe(9995)
+  })
+
+  it('adds footstools on top of a package', () => {
+    const q = quote(['s2-left', 's2-right', 'foot'], 'grand', false)
+    expect(q.now).toBe(20990 + 4995)
+  })
+})
+
+describe('preset sizes', () => {
+  it('matches the widths Mio lists to within 2 cm', () => {
+    for (const p of PRESETS) {
+      const b = boundsOf(p.modules.map((m) => footprint({ ...m, uid: '' })))!
+      const listedW = Number(p.listed.split(' ')[0])
+      expect(Math.abs(b.x1 - b.x0 - listedW), p.name).toBeLessThanOrEqual(2)
+    }
   })
 })

@@ -6,8 +6,9 @@ Mio doesn't have an official couch builder so I'm trying to make my own.
 
 ## Features
 
-- All Rossi modules with their measurements (cm): 1,5-sits and 2-sits with no, left, right or both armrests, Hörn 90, Schäslong XL left/right, Fotpall and Fotpall XL. Data lives in `src/data/modules.ts`.
-- One-click starting points rebuilt from modules: Mio's 2-, 3- and 4-sits sofas, 2-/4-sits with Schäslong XL and the corner sofa with divan, left or right.
+- All Rossi modules with their measurements and prices: 1,5-sits and 2-sits with no, one or two armrests, 3-sits soffa, Hörn 90, Schäslong and Schäslong XL, Öppet avslut, Fotpall and Fotpall XL. Data lives in `src/data/modules.ts`.
+- Running price for the couch in the chosen fabric group, including Mio's package prices when the couch matches a ready-made sofa.
+- One-click starting points rebuilt from modules: every ready-made Rossi sofa in Mio's price list (3- and 4-sits, with schäslong, with divan), left or right.
 - Drag modules in 2D or 3D. They snap edge-to-edge to each other and to walls; overlaps and modules outside the room turn red.
 - Shift-click or Ctrl+A to select several modules and move, rotate, mirror, duplicate or delete them together.
 - Live distances from the selection to the nearest wall on each side.
@@ -30,6 +31,10 @@ npm test        # geometry and preset unit tests
 npm run build:artifact  # one self-contained HTML file in dist-artifact/
 ```
 
-## About the measurements
+## About the measurements and prices
 
-Every Rossi seating module is 112 cm deep and 86 cm high (seat height 44, seat depth 70); each armrest adds 16 cm of width. Figures come from Mio's [Rossi spec sheet](https://www.mio.se/dokument/221541.pdf) and product pages, read through search summaries, so treat them as ±2 cm and check mio.se before buying. Fabric colours are approximations.
+Every Rossi seating module is 112 cm deep and 86 cm high (seat height 44, seat depth 70); both armrest styles are 16 cm wide and the wengé-stained legs are 4.5 cm high. Sizes, prices per fabric group (Zoom; Alex; Iberia/Aurora; Grand), the season-sale prices (Zoom and Alex, to 19 Oct 2026) and the number of included 50×50 pillows come from Mio's printed Rossi price list, cross-checked with the [Rossi spec sheet](https://www.mio.se/dokument/221541.pdf). Mio allows about ±2 cm; prices are pick-up prices and change, so check mio.se before buying.
+
+### Product photos
+
+Product photos from Mio's price list are not in this repository. To use them, put cropped JPEGs in a `local-photos/` folder (git-ignored) with the names listed in `src/data/photos.ts`; the app shows them in the module list and side panel and falls back to its own drawings without them.

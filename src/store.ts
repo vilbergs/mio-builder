@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { MODULE_BY_ID, FABRICS } from './data/modules'
+import { MODULE_BY_ID, FABRICS, type FabricGroup } from './data/modules'
 import type { ArmStyle } from './model/parts'
 import { PRESETS } from './data/presets'
 import {
@@ -35,6 +35,8 @@ interface State extends Design {
   selected: string[]
   selectedWall: number | null
   fabricImage: string | null
+  showPillows: boolean
+  fabricGroup: FabricGroup
   toast: string | null
   exportPreview: ExportPreview | null
   dragOpenings: Opening[] | null
@@ -138,6 +140,8 @@ export const useStore = create<State>((set, get) => ({
   selected: [],
   selectedWall: null,
   fabricImage: null,
+  showPillows: true,
+  fabricGroup: 'alex',
   toast: null,
   exportPreview: null,
   dragOpenings: null,
