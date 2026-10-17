@@ -1,9 +1,10 @@
-import { useEffect } from 'react'
+import { lazy, Suspense, useEffect } from 'react'
 import { useStore } from './store'
 import { Palette } from './components/Palette'
 import { Inspector } from './components/Inspector'
 import { Plan2D } from './components/Plan2D'
-import { View3D } from './components/View3D'
+
+const View3D = lazy(() => import('./components/View3D').then((m) => ({ default: m.View3D })))
 
 function Seg<T extends string>({ value, options, onChange }: { value: T; options: [T, string][]; onChange: (v: T) => void }) {
   return (
@@ -35,23 +36,31 @@ export default function App() {
         st.redo()
         return
       }
-      const sel = st.modules.find((m) => m.uid === st.selected)
-      if (!sel) return
+      if (mod && e.key.toLowerCase() === 'a' && st.edit === 'couch') {
+        e.preventDefault()
+        st.selectAll()
+        return
+      }
+      if (!st.selected.length) return
       if (mod && e.key.toLowerCase() === 'd') {
         e.preventDefault()
-        st.duplicate(sel.uid)
+        st.duplicateSelection()
+      } else if (mod) {
+        return
       } else if (e.key === 'r' || e.key === 'R') {
-        st.rotate(sel.uid, e.shiftKey ? -1 : 1)
+        st.rotateSelection(e.shiftKey ? -1 : 1)
+      } else if (e.key === 'm' || e.key === 'M') {
+        st.mirrorSelection()
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
-        st.removeModule(sel.uid)
+        st.removeSelection()
       } else if (e.key.startsWith('Arrow')) {
         e.preventDefault()
         const d = e.shiftKey ? 10 : 1
         const dx = e.key === 'ArrowLeft' ? -d : e.key === 'ArrowRight' ? d : 0
         const dy = e.key === 'ArrowUp' ? -d : e.key === 'ArrowDown' ? d : 0
-        st.updateModule(sel.uid, { x: sel.x + dx, y: sel.y + dy })
+        st.nudge(dx, dy)
       } else if (e.key === 'Escape') {
-        st.set({ selected: null })
+        st.clearSelection()
       }
     }
     window.addEventListener('keydown', onKey)
@@ -69,7 +78,7 @@ export default function App() {
           </div>
         </div>
         <div className="controls">
-          <Seg value={s.edit} options={[['couch', 'Couch'], ['room', 'Room']]} onChange={(v) => s.set({ edit: v, selected: null, selectedWall: null, view: v === 'room' ? '2d' : s.view })} />
+          <Seg value={s.edit} options={[['couch', 'Couch'], ['room', 'Room']]} onChange={(v) => s.set({ edit: v, selected: [], selectedWall: null, view: v === 'room' ? '2d' : s.view })} />
           <Seg value={s.view} options={[['2d', '2D'], ['3d', '3D']]} onChange={(v) => s.set({ view: v, edit: v === '3d' ? 'couch' : s.edit })} />
           <Seg value={s.style} options={[['sketch', 'Sketch'], ['real', 'Realistic']]} onChange={(v) => s.set({ style: v })} />
           <div className="seg">
@@ -81,7 +90,7 @@ export default function App() {
       <main className="main">
         <Palette />
         <div className="stage">
-          {s.view === '2d' ? <Plan2D /> : <View3D />}
+          {s.view === '2d' ? <Plan2D /> : <Suspense fallback={<div className="loading">Loading 3D…</div>}><View3D /></Suspense>}
           <div className="stage-hint">
             {s.view === '3d'
               ? 'Drag to orbit · scroll to zoom · right-drag to pan · drag a module to move it'

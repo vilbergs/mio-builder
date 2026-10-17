@@ -4,18 +4,20 @@ import { useStore, moduleIssues } from '../store'
 import { MODULE_BY_ID } from '../data/modules'
 import { moduleParts, type Part } from '../model/parts'
 import {
-  footprint, localToPlan, walls, moveWall, snapCenter, boundsOf, polygonArea, isValidRoom,
+  footprint, localToPlan, walls, moveWall, snapCenter, snapGroupDelta, boundsOf, polygonArea, isValidRoom, wallClearance,
   type Placed, type Pt, type Rect,
 } from '../model/geometry'
 import { shade } from '../model/color'
+import { exportSvg } from '../exportImage'
 
 const WALL_T = 12
 const gen = rough.generator()
 
 type Drag =
-  | { kind: 'module'; uid: string; dx: number; dy: number; moved: boolean }
+  | { kind: 'module'; start: Pt; base: Placed[]; moved: boolean }
   | { kind: 'wall'; i: number; start: Pt; base: Pt[] }
   | { kind: 'pan'; sx: number; sy: number; vb: VB }
+  | { kind: 'pinch'; dist: number; mid: Pt; vb: VB }
 
 interface VB {
   x: number
@@ -99,29 +101,57 @@ export function Plan2D() {
     if (s.edit !== 'couch') return
     e.stopPropagation()
     ;(e.target as Element).setPointerCapture?.(e.pointerId)
-    const p = toPlan(e)
-    s.set({ selected: m.uid, selectedWall: null })
-    setDrag({ kind: 'module', uid: m.uid, dx: p.x - m.x, dy: p.y - m.y, moved: false })
-    useStore.setState((st) => ({ past: [...st.past.slice(-60), { room: st.room, wallHeight: st.wallHeight, modules: st.modules, armStyle: st.armStyle, fabric: st.fabric }], future: [] }))
+    const additive = e.shiftKey || e.ctrlKey || e.metaKey
+    s.select(m.uid, additive)
+    s.set({ selectedWall: null })
+    const sel = new Set(useStore.getState().selected)
+    if (!sel.has(m.uid)) return
+    setDrag({ kind: 'module', start: toPlan(e), base: s.modules.filter((x) => sel.has(x.uid)), moved: false })
+    s.snapshot()
   }
 
   const startWall = (e: React.PointerEvent, i: number) => {
     if (s.edit !== 'room') return
     e.stopPropagation()
     ;(e.target as Element).setPointerCapture?.(e.pointerId)
-    s.set({ selectedWall: i, selected: null })
+    s.set({ selectedWall: i, selected: [] })
     setDrag({ kind: 'wall', i, start: toPlan(e), base: s.room })
+  }
+
+  const touches = useRef(new Map<number, { x: number; y: number }>())
+  const pinchStart = () => {
+    const [a, b] = [...touches.current.values()]
+    return { dist: Math.hypot(a.x - b.x, a.y - b.y), mid: toPlan({ clientX: (a.x + b.x) / 2, clientY: (a.y + b.y) / 2 }) }
   }
 
   const onPointerDown = (e: React.PointerEvent) => {
     if (!vb) return
     ;(e.target as Element).setPointerCapture?.(e.pointerId)
-    s.set({ selected: null, selectedWall: null })
+    if (e.pointerType === 'touch') touches.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
+    if (touches.current.size === 2) {
+      setDrag({ kind: 'pinch', ...pinchStart(), vb })
+      return
+    }
+    s.set({ selected: [], selectedWall: null })
     setDrag({ kind: 'pan', sx: e.clientX, sy: e.clientY, vb })
   }
 
   const onPointerMove = (e: React.PointerEvent) => {
+    if (touches.current.has(e.pointerId)) touches.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
     if (!drag) return
+    if (drag.kind === 'pinch') {
+      if (touches.current.size < 2) return
+      const [a, b] = [...touches.current.values()]
+      const f = drag.dist / Math.max(1, Math.hypot(a.x - b.x, a.y - b.y))
+      const w = Math.min(4000, Math.max(80, drag.vb.w * f))
+      const k2 = w / drag.vb.w
+      // Keep the plan point under the fingers' midpoint fixed.
+      const el = svgRef.current!.getBoundingClientRect()
+      const mx = (a.x + b.x) / 2 - el.left, my = (a.y + b.y) / 2 - el.top
+      const h = drag.vb.h * k2
+      setVb({ x: drag.mid.x - (mx / el.width) * w, y: drag.mid.y - (my / el.height) * h, w, h })
+      return
+    }
     if (drag.kind === 'pan') {
       const k = drag.vb.w / svgRef.current!.clientWidth
       setVb({ ...drag.vb, x: drag.vb.x - (e.clientX - drag.sx) * k, y: drag.vb.y - (e.clientY - drag.sy) * k })
@@ -129,12 +159,11 @@ export function Plan2D() {
     }
     const p = toPlan(e)
     if (drag.kind === 'module') {
-      const m = s.modules.find((x) => x.uid === drag.uid)
-      if (!m) return
-      const r = footprint(m)
-      const others = s.modules.filter((x) => x.uid !== m.uid).map(footprint)
-      const c = snapCenter({ w: r.x1 - r.x0, h: r.y1 - r.y0 }, { x: p.x - drag.dx, y: p.y - drag.dy }, others, s.room, 10 * pxToCm())
-      s.updateModule(m.uid, { x: Math.round(c.x * 2) / 2, y: Math.round(c.y * 2) / 2 }, false)
+      const ids = new Set(drag.base.map((m) => m.uid))
+      const others = s.modules.filter((x) => !ids.has(x.uid)).map(footprint)
+      const d = snapGroupDelta(drag.base.map(footprint), { x: p.x - drag.start.x, y: p.y - drag.start.y }, others, s.room, 10 * pxToCm())
+      const moved = new Map(drag.base.map((m) => [m.uid, { ...m, x: Math.round((m.x + d.x) * 2) / 2, y: Math.round((m.y + d.y) * 2) / 2 }]))
+      s.setModules(s.modules.map((m) => moved.get(m.uid) ?? m), false)
       if (!drag.moved) setDrag({ ...drag, moved: true })
     } else if (drag.kind === 'wall') {
       const w = walls(drag.base)[drag.i]
@@ -154,7 +183,12 @@ export function Plan2D() {
     }
   }
 
-  const onPointerUp = () => {
+  const onPointerUp = (e: React.PointerEvent) => {
+    touches.current.delete(e.pointerId)
+    if (drag?.kind === 'pinch') {
+      setDrag(null)
+      return
+    }
     if (drag?.kind === 'wall') {
       const room = useStore.getState().room
       useStore.setState({ room: drag.base })
@@ -212,7 +246,7 @@ export function Plan2D() {
     const def = MODULE_BY_ID[m.defId]
     const r = footprint(m)
     const parts = moduleParts(def, s.armStyle).filter((p) => p.kind !== 'leg' && p.kind !== 'base').sort((a, b) => a.z1 - b.z1)
-    const sel = s.selected === m.uid
+    const sel = s.selected.includes(m.uid)
     const bad = issues.has(m.uid)
     const seed = seedOf(m.uid)
     return (
@@ -253,7 +287,7 @@ export function Plan2D() {
           <rect x={r.x0 - 3 * k} y={r.y0 - 3 * k} width={r.x1 - r.x0 + 6 * k} height={r.y1 - r.y0 + 6 * k}
             fill="none" stroke="#2f6fed" strokeWidth={2 * k} strokeDasharray={`${6 * k} ${4 * k}`} rx={3} />
         )}
-        {sel && (
+        {sel && s.selected.length === 1 && (
           <text x={(r.x0 + r.x1) / 2} y={(r.y0 + r.y1) / 2} textAnchor="middle" dominantBaseline="middle" fontSize={fontSize}
             className="plan-label" pointerEvents="none">
             {def.width} × {def.depth}
@@ -284,6 +318,19 @@ export function Plan2D() {
   }
 
   const area = Math.abs(polygonArea(s.room)) / 10000
+  const selBounds = boundsOf(s.modules.filter((m) => s.selected.includes(m.uid)).map(footprint))
+  const clearance: { key: string; a: Pt; b: Pt; label: string; vertical: boolean }[] = []
+  if (selBounds) {
+    const c = wallClearance(selBounds, s.room)
+    const mx = (selBounds.x0 + selBounds.x1) / 2, my = (selBounds.y0 + selBounds.y1) / 2
+    const add = (key: string, d: number | null, a: Pt, b: Pt, vertical: boolean) => {
+      if (d !== null && d > 0.5) clearance.push({ key, a, b, label: `${Math.round(d)}`, vertical })
+    }
+    add('l', c.left, { x: selBounds.x0 - (c.left ?? 0), y: my }, { x: selBounds.x0, y: my }, false)
+    add('r', c.right, { x: selBounds.x1, y: my }, { x: selBounds.x1 + (c.right ?? 0), y: my }, false)
+    add('u', c.up, { x: mx, y: selBounds.y0 - (c.up ?? 0) }, { x: mx, y: selBounds.y0 }, true)
+    add('d', c.down, { x: mx, y: selBounds.y1 }, { x: mx, y: selBounds.y1 + (c.down ?? 0) }, true)
+  }
 
   return (
     <div className={`plan ${sketch ? 'plan-sketch' : 'plan-real'}`} onDragOver={(e) => e.preventDefault()} onDrop={onDrop}>
@@ -347,6 +394,22 @@ export function Plan2D() {
 
         <g opacity={s.edit === 'room' ? 0.45 : 1}>{s.modules.map(renderModule)}</g>
 
+        {selBounds && s.edit === 'couch' && (
+          <g pointerEvents="none">
+            {s.selected.length > 1 && (
+              <rect x={selBounds.x0 - 8 * k} y={selBounds.y0 - 8 * k} width={selBounds.x1 - selBounds.x0 + 16 * k} height={selBounds.y1 - selBounds.y0 + 16 * k}
+                fill="none" stroke="#2f6fed" strokeWidth={1.2 * k} strokeDasharray={`${3 * k} ${3 * k}`} rx={4 * k} />
+            )}
+            {clearance.map((c) => (
+              <g key={c.key} className="clear">
+                <line x1={c.a.x} y1={c.a.y} x2={c.b.x} y2={c.b.y} strokeWidth={1 * k} strokeDasharray={`${4 * k} ${3 * k}`} />
+                <text x={(c.a.x + c.b.x) / 2 + (c.vertical ? 4 * k : 0)} y={(c.a.y + c.b.y) / 2 - (c.vertical ? 0 : 4 * k)} fontSize={fontSize * 0.95}
+                  textAnchor={c.vertical ? 'start' : 'middle'} dominantBaseline={c.vertical ? 'middle' : 'auto'} className="clear-text">{c.label}</text>
+              </g>
+            ))}
+          </g>
+        )}
+
         {couchBounds && s.edit === 'couch' && (
           <>
             {dimLine({ x: couchBounds.x0, y: couchBounds.y1 }, { x: couchBounds.x1, y: couchBounds.y1 }, `${Math.round(couchBounds.x1 - couchBounds.x0)} cm`, { x: 0, y: 26 * k }, 'cw')}
@@ -360,6 +423,7 @@ export function Plan2D() {
       </svg>
       <div className="plan-tools">
         <button onClick={fit} title="Fit room to view">Fit</button>
+        <button onClick={() => svgRef.current && exportSvg(svgRef.current, 'rossi-plan.png')} title="Save the plan as an image">Save image</button>
       </div>
     </div>
   )

@@ -102,7 +102,7 @@ button.link { border: 0; background: none; color: var(--accent); padding: 0; cur
 .stage { position: relative; min-width: 0; min-height: 0; }
 .plan, .view3d { position: absolute; inset: 0; }
 .plan svg { width: 100%; height: 100%; display: block; touch-action: none; user-select: none; }
-.plan-tools { position: absolute; right: 12px; top: 12px; }
+.plan-tools { position: absolute; right: 12px; top: 12px; display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 .stage-hint { position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); background: rgba(30, 30, 28, 0.72); color: #fff; font-size: 12px; padding: 5px 12px; border-radius: 999px; pointer-events: none; white-space: nowrap; }
 .dim line { stroke: #4a4844; }
 .dim-text, .plan-label { fill: #3a3935; font-variant-numeric: tabular-nums; paint-order: stroke; stroke: rgba(255, 255, 255, 0.85); stroke-width: 3px; }
@@ -114,3 +114,9 @@ button.link { border: 0; background: none; color: var(--accent); padding: 0; cur
   .stage { min-height: 60vh; }
   .stage-hint { white-space: normal; text-align: center; width: max-content; max-width: 90%; }
 }
+.clear line { stroke: #2f6fed; }
+.clear-text { fill: #2f6fed; font-variant-numeric: tabular-nums; paint-order: stroke; stroke: rgba(255, 255, 255, 0.9); stroke-width: 3px; }
+.presets { display: flex; flex-direction: column; gap: 4px; }
+.presets button { text-align: left; border: 1px solid var(--line); background: var(--bg); border-radius: 8px; padding: 6px 10px; cursor: pointer; font-size: 13px; }
+.presets button:hover { border-color: var(--accent); background: var(--accent-soft); }
+.loading { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); }

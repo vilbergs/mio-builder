@@ -1,9 +1,10 @@
 import { create } from 'zustand'
 import { MODULE_BY_ID, FABRICS } from './data/modules'
 import type { ArmStyle } from './model/parts'
+import { PRESETS } from './data/presets'
 import {
-  footprint, rectsOverlap, rectInsideRoom, normalizeRoom, isValidRoom, ROOM_PRESETS,
-  type Placed, type Pt, type Rot,
+  footprint, rectsOverlap, rectInsideRoom, normalizeRoom, isValidRoom, ROOM_PRESETS, boundsOf, mirrorPlaced, rotatePlacedAbout,
+  type Placed, type Pt, type Rect,
 } from './model/geometry'
 
 export type ViewMode = '2d' | '3d'
@@ -22,7 +23,7 @@ interface State extends Design {
   view: ViewMode
   style: Style
   edit: EditMode
-  selected: string | null
+  selected: string[]
   selectedWall: number | null
   fabricImage: string | null
   past: Design[]
@@ -33,10 +34,18 @@ interface State extends Design {
   undo: () => void
   redo: () => void
   addModule: (defId: string, at?: Pt) => void
+  addPreset: (id: string) => void
   updateModule: (uid: string, patch: Partial<Placed>, record?: boolean) => void
-  removeModule: (uid: string) => void
-  rotate: (uid: string, dir?: 1 | -1) => void
-  duplicate: (uid: string) => void
+  setModules: (modules: Placed[], record?: boolean) => void
+  select: (uid: string, additive?: boolean) => void
+  selectAll: () => void
+  clearSelection: () => void
+  nudge: (dx: number, dy: number) => void
+  rotateSelection: (dir?: 1 | -1) => void
+  mirrorSelection: () => void
+  removeSelection: () => void
+  duplicateSelection: () => void
+  snapshot: () => void
   setRoom: (pts: Pt[], record?: boolean) => void
   loadDesign: (d: Design) => void
 }
@@ -72,6 +81,29 @@ function pick(s: Design): Design {
   return { room: s.room, wallHeight: s.wallHeight, modules: s.modules, armStyle: s.armStyle, fabric: s.fabric }
 }
 
+/** First spot (scanning from the top-left, or nearest to `prefer`) where a w x h box fits inside the room without overlaps. */
+function freeSpot(s: Design, w: number, h: number, prefer?: Pt): Pt {
+  const rects: Rect[] = s.modules.map(footprint)
+  const xs = s.room.map((p) => p.x)
+  const ys = s.room.map((p) => p.y)
+  const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys)
+  let best: Pt | null = null
+  let bestD = Infinity
+  for (let y = minY + h / 2; y <= maxY - h / 2; y += 10) {
+    for (let x = minX + w / 2; x <= maxX - w / 2; x += 10) {
+      const r = { x0: x - w / 2, y0: y - h / 2, x1: x + w / 2, y1: y + h / 2 }
+      if (!rectInsideRoom(r, s.room) || rects.some((o) => rectsOverlap(o, r))) continue
+      if (!prefer) return { x, y }
+      const d = Math.hypot(x - prefer.x, y - prefer.y)
+      if (d < bestD) {
+        bestD = d
+        best = { x, y }
+      }
+    }
+  }
+  return best ?? prefer ?? { x: (minX + maxX) / 2, y: (minY + maxY) / 2 }
+}
+
 let counter = Date.now() % 100000
 const uid = () => `m${(counter++).toString(36)}`
 
@@ -80,7 +112,7 @@ export const useStore = create<State>((set, get) => ({
   view: '2d',
   style: 'real',
   edit: 'couch',
-  selected: null,
+  selected: [],
   selectedWall: null,
   fabricImage: null,
   past: [],
@@ -97,40 +129,37 @@ export const useStore = create<State>((set, get) => ({
     const s = get()
     const prev = s.past.at(-1)
     if (!prev) return
-    set({ ...prev, past: s.past.slice(0, -1), future: [pick(s), ...s.future], selected: null, selectedWall: null })
+    set({ ...prev, past: s.past.slice(0, -1), future: [pick(s), ...s.future], selected: [], selectedWall: null })
   },
 
   redo: () => {
     const s = get()
     const next = s.future[0]
     if (!next) return
-    set({ ...next, past: [...s.past, pick(s)], future: s.future.slice(1), selected: null, selectedWall: null })
+    set({ ...next, past: [...s.past, pick(s)], future: s.future.slice(1), selected: [], selectedWall: null })
   },
 
   addModule: (defId, at) => {
     const s = get()
     const def = MODULE_BY_ID[defId]
-    const rects = s.modules.map(footprint)
-    let pos = at
-    if (!pos) {
-      // Scan the room for the first free spot, starting top-left.
-      const xs = s.room.map((p) => p.x)
-      const ys = s.room.map((p) => p.y)
-      const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys)
-      outer: for (let y = minY + def.depth / 2; y <= maxY - def.depth / 2; y += 10) {
-        for (let x = minX + def.width / 2; x <= maxX - def.width / 2; x += 10) {
-          const r = { x0: x - def.width / 2, y0: y - def.depth / 2, x1: x + def.width / 2, y1: y + def.depth / 2 }
-          if (rectInsideRoom(r, s.room) && !rects.some((o) => rectsOverlap(o, r))) {
-            pos = { x, y }
-            break outer
-          }
-        }
-      }
-      pos ??= { x: (minX + maxX) / 2, y: (minY + maxY) / 2 }
-    }
+    const pos = at ?? freeSpot(s, def.width, def.depth)
     const m: Placed = { uid: uid(), defId, x: Math.round(pos.x), y: Math.round(pos.y), rot: 0 }
     get().commit({ modules: [...s.modules, m] })
-    set({ selected: m.uid, edit: 'couch' })
+    set({ selected: [m.uid], edit: 'couch' })
+  },
+
+  addPreset: (id) => {
+    const p = PRESETS.find((x) => x.id === id)
+    if (!p) return
+    const s = get()
+    const parts = p.modules.map((m) => ({ ...m, uid: uid() }))
+    const b = boundsOf(parts.map(footprint))!
+    const c = freeSpot(s, b.x1 - b.x0, b.y1 - b.y0)
+    const dx = Math.round(c.x - (b.x0 + b.x1) / 2)
+    const dy = Math.round(c.y - (b.y0 + b.y1) / 2)
+    const placed = parts.map((m) => ({ ...m, x: m.x + dx, y: m.y + dy }))
+    get().commit({ modules: [...s.modules, ...placed] })
+    set({ selected: placed.map((m) => m.uid), edit: 'couch' })
   },
 
   updateModule: (id, patch, record = true) => {
@@ -139,26 +168,75 @@ export const useStore = create<State>((set, get) => ({
     else set({ modules })
   },
 
-  removeModule: (id) => {
-    get().commit({ modules: get().modules.filter((m) => m.uid !== id) })
-    set({ selected: null })
+  setModules: (modules, record = true) => {
+    if (record) get().commit({ modules })
+    else set({ modules })
   },
 
-  rotate: (id, dir = 1) => {
-    const m = get().modules.find((x) => x.uid === id)
-    if (!m) return
-    const rot = (((m.rot + dir * 90) % 360) + 360) % 360 as Rot
-    get().updateModule(id, { rot })
+  select: (id, additive = false) => {
+    const sel = get().selected
+    if (additive) set({ selected: sel.includes(id) ? sel.filter((x) => x !== id) : [...sel, id] })
+    else if (!sel.includes(id)) set({ selected: [id] })
   },
 
-  duplicate: (id) => {
-    const m = get().modules.find((x) => x.uid === id)
-    if (!m) return
-    const r = footprint(m)
-    const copy = { ...m, uid: uid(), x: m.x + (r.x1 - r.x0), y: m.y }
-    get().commit({ modules: [...get().modules, copy] })
-    set({ selected: copy.uid })
+  selectAll: () => set({ selected: get().modules.map((m) => m.uid), edit: 'couch' }),
+  clearSelection: () => set({ selected: [] }),
+
+  nudge: (dx, dy) => {
+    const sel = new Set(get().selected)
+    get().commit({ modules: get().modules.map((m) => (sel.has(m.uid) ? { ...m, x: m.x + dx, y: m.y + dy } : m)) })
   },
+
+  rotateSelection: (dir = 1) => {
+    const s = get()
+    const sel = new Set(s.selected)
+    const group = s.modules.filter((m) => sel.has(m.uid))
+    if (!group.length) return
+    const b = boundsOf(group.map(footprint))!
+    const c = { x: (b.x0 + b.x1) / 2, y: (b.y0 + b.y1) / 2 }
+    const turned = new Map(group.map((m) => [m.uid, rotatePlacedAbout(m, c, dir)]))
+    // Keep edges on whole centimetres after turning about a half-centimetre centre.
+    const nb = boundsOf([...turned.values()].map(footprint))!
+    let fx = Math.round(nb.x0) - nb.x0, fy = Math.round(nb.y0) - nb.y0
+    // Turning a long group about its centre can swing it through a wall; nudge it back inside the room's extent.
+    const xs = s.room.map((p) => p.x), ys = s.room.map((p) => p.y)
+    const push = (lo: number, hi: number, min: number, max: number) => (hi - lo > max - min ? 0 : lo < min ? min - lo : hi > max ? max - hi : 0)
+    fx += push(nb.x0 + fx, nb.x1 + fx, Math.min(...xs), Math.max(...xs))
+    fy += push(nb.y0 + fy, nb.y1 + fy, Math.min(...ys), Math.max(...ys))
+    get().commit({ modules: s.modules.map((m) => { const t = turned.get(m.uid); return t ? { ...t, x: t.x + fx, y: t.y + fy } : m }) })
+  },
+
+  mirrorSelection: () => {
+    const s = get()
+    const sel = new Set(s.selected)
+    const group = s.modules.filter((m) => sel.has(m.uid))
+    if (!group.length) return
+    const b = boundsOf(group.map(footprint))!
+    const axis = (b.x0 + b.x1) / 2
+    get().commit({ modules: s.modules.map((m) => (sel.has(m.uid) ? mirrorPlaced(m, axis) : m)) })
+  },
+
+  removeSelection: () => {
+    const sel = new Set(get().selected)
+    if (!sel.size) return
+    get().commit({ modules: get().modules.filter((m) => !sel.has(m.uid)) })
+    set({ selected: [] })
+  },
+
+  duplicateSelection: () => {
+    const s = get()
+    const sel = new Set(s.selected)
+    const group = s.modules.filter((m) => sel.has(m.uid))
+    if (!group.length) return
+    const b = boundsOf(group.map(footprint))!
+    const c = freeSpot({ ...s, modules: s.modules }, b.x1 - b.x0, b.y1 - b.y0, { x: (b.x0 + b.x1) / 2 + (b.x1 - b.x0), y: (b.y0 + b.y1) / 2 })
+    const dx = Math.round(c.x - (b.x0 + b.x1) / 2), dy = Math.round(c.y - (b.y0 + b.y1) / 2)
+    const copies = group.map((m) => ({ ...m, uid: uid(), x: m.x + dx, y: m.y + dy }))
+    get().commit({ modules: [...s.modules, ...copies] })
+    set({ selected: copies.map((m) => m.uid) })
+  },
+
+  snapshot: () => set((st) => ({ past: [...st.past.slice(-60), pick(st)], future: [] })),
 
   setRoom: (pts, record = true) => {
     const clean = record ? normalizeRoom(pts) : pts
@@ -169,7 +247,7 @@ export const useStore = create<State>((set, get) => ({
 
   loadDesign: (d) => {
     get().commit({ ...defaultDesign, ...d })
-    set({ selected: null, selectedWall: null })
+    set({ selected: [], selectedWall: null })
   },
 }))
 

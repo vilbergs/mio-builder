@@ -250,3 +250,70 @@ export function snapCenter(
     y: dy !== null ? c.y + dy : snap(c.y, y0),
   }
 }
+
+// ---------- groups ----------
+
+const MIRROR_VARIANT: Record<string, string> = {
+  's15-left': 's15-right', 's15-right': 's15-left',
+  's2-left': 's2-right', 's2-right': 's2-left',
+  'chaise-left': 'chaise-right', 'chaise-right': 'chaise-left',
+}
+const CORNER_MIRROR: Record<Rot, Rot> = { 0: 90, 90: 0, 180: 270, 270: 180 }
+
+/** Mirror a module left-to-right about the vertical line x = axis. */
+export function mirrorPlaced(p: Placed, axis: number): Placed {
+  const def = MODULE_BY_ID[p.defId]
+  const rot = def.kind === 'corner' ? CORNER_MIRROR[p.rot] : (((360 - p.rot) % 360) as Rot)
+  return { ...p, defId: MIRROR_VARIANT[p.defId] ?? p.defId, rot, x: 2 * axis - p.x }
+}
+
+/** Rotate a module 90° clockwise (dir 1) or anticlockwise (dir -1) about a point. */
+export function rotatePlacedAbout(p: Placed, c: Pt, dir: 1 | -1): Placed {
+  const dx = p.x - c.x
+  const dy = p.y - c.y
+  const rot = ((((p.rot + dir * 90) % 360) + 360) % 360) as Rot
+  return { ...p, rot, x: c.x - dir * dy, y: c.y + dir * dx }
+}
+
+/** Snap a group moved by `delta`: the group's bounding box snaps like a single module. */
+export function snapGroupDelta(base: Rect[], delta: Pt, others: Rect[], room: Pt[], threshold: number): Pt {
+  const b = boundsOf(base)!
+  const w = b.x1 - b.x0
+  const h = b.y1 - b.y0
+  const c = snapCenter({ w, h }, { x: (b.x0 + b.x1) / 2 + delta.x, y: (b.y0 + b.y1) / 2 + delta.y }, others, room, threshold)
+  return { x: c.x - (b.x0 + b.x1) / 2, y: c.y - (b.y0 + b.y1) / 2 }
+}
+
+/** Clear distance from a rectangle to the nearest wall straight left, right, up and down. */
+export function wallClearance(r: Rect, room: Pt[]): { left: number | null; right: number | null; up: number | null; down: number | null } {
+  const res = { left: null as number | null, right: null as number | null, up: null as number | null, down: null as number | null }
+  const min = (a: number | null, b: number) => (a === null || b < a ? b : a)
+  for (const w of walls(room)) {
+    if (w.horizontal) {
+      const a = Math.min(w.a.x, w.b.x), b = Math.max(w.a.x, w.b.x)
+      if (a >= r.x1 || b <= r.x0) continue
+      const y = w.a.y
+      if (y <= r.y0 + 0.01) res.up = min(res.up, r.y0 - y)
+      else if (y >= r.y1 - 0.01) res.down = min(res.down, y - r.y1)
+    } else {
+      const a = Math.min(w.a.y, w.b.y), b = Math.max(w.a.y, w.b.y)
+      if (a >= r.y1 || b <= r.y0) continue
+      const x = w.a.x
+      if (x <= r.x0 + 0.01) res.left = min(res.left, r.x0 - x)
+      else if (x >= r.x1 - 0.01) res.right = min(res.right, x - r.x1)
+    }
+  }
+  return res
+}
+
+/** Move wall i onto the line of the parallel wall two steps away (offset -2 or +2), removing the step between them. */
+export function alignWall(pts: Pt[], i: number, offset: -2 | 2): Pt[] {
+  const ws = walls(pts)
+  const n = ws.length
+  const w = ws[i]
+  const o = ws[(i + offset + n) % n]
+  const cur = w.horizontal ? w.a.y : w.a.x
+  const target = w.horizontal ? o.a.y : o.a.x
+  const along = w.horizontal ? w.inward.y : w.inward.x
+  return moveWall(pts, i, (target - cur) * along)
+}

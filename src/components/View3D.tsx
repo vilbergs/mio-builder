@@ -5,9 +5,10 @@ import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeom
 import { useStore, moduleIssues } from '../store'
 import { MODULE_BY_ID } from '../data/modules'
 import { moduleParts, type Part } from '../model/parts'
-import { footprint, walls, snapCenter, type Placed, type Pt } from '../model/geometry'
+import { footprint, walls, snapGroupDelta, pointInPolygon, type Placed, type Pt } from '../model/geometry'
 import { fabricTextures, woodTexture, imageTexture } from '../three/textures'
 import { shade } from '../model/color'
+import { exportCanvas, requestCamera, type CameraView } from '../exportImage'
 
 const WALL_T = 12
 const M = 0.01 // cm -> m
@@ -87,12 +88,44 @@ export function View3D() {
     ctx.current = { renderer, scene, camera, controls, room, couch, wallMeshes: [], sun, hemi }
 
     // Frame the room.
-    const st = useStore.getState()
-    const xs = st.room.map((p) => p.x * M), zs = st.room.map((p) => p.y * M)
-    const cx = (Math.min(...xs) + Math.max(...xs)) / 2, cz = (Math.min(...zs) + Math.max(...zs)) / 2
-    const span = Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...zs) - Math.min(...zs))
-    controls.target.set(cx, 0.4, cz)
-    camera.position.set(cx + span * 0.55, span * 0.75 + 1.2, cz + span * 0.95)
+    const frame = (view: CameraView) => {
+      const st = useStore.getState()
+      const xs = st.room.map((p) => p.x * M), zs = st.room.map((p) => p.y * M)
+      const x0 = Math.min(...xs), x1 = Math.max(...xs), z0 = Math.min(...zs), z1 = Math.max(...zs)
+      const cx = (x0 + x1) / 2, cz = (z0 + z1) / 2
+      const span = Math.max(x1 - x0, z1 - z0)
+      // Aim at the couch if there is one, else the room centre.
+      const fp = st.modules.map(footprint)
+      const tx = fp.length ? (Math.min(...fp.map((r) => r.x0)) + Math.max(...fp.map((r) => r.x1))) / 2 * M : cx
+      const tz = fp.length ? (Math.min(...fp.map((r) => r.y0)) + Math.max(...fp.map((r) => r.y1))) / 2 * M : cz
+      if (view === 'top') {
+        controls.target.set(cx, 0, cz)
+        camera.position.set(cx, span * 1.35 + 1, cz + 0.001)
+      } else if (view === 'eye') {
+        // Stand in the room, on the far side from the couch, at eye height.
+        let best = { x: cx, z: cz }
+        let bestD = -1
+        for (let x = x0 + 0.3; x <= x1 - 0.3; x += 0.1) {
+          for (let z = z0 + 0.3; z <= z1 - 0.3; z += 0.1) {
+            const inside = [[0, 0], [0.3, 0], [-0.3, 0], [0, 0.3], [0, -0.3]].every(([dx, dz]) => pointInPolygon({ x: (x + dx) / M, y: (z + dz) / M }, st.room))
+            const d = Math.hypot(x - tx, z - tz)
+            if (inside && d > bestD) {
+              bestD = d
+              best = { x, z }
+            }
+          }
+        }
+        controls.target.set(tx, 0.5, tz)
+        camera.position.set(best.x, 1.6, best.z)
+      } else {
+        controls.target.set(cx, 0.4, cz)
+        camera.position.set(cx + span * 0.55, span * 0.75 + 1.2, cz + span * 0.95)
+      }
+      controls.update()
+    }
+    frame('corner')
+    const onCamera = (e: Event) => frame((e as CustomEvent<CameraView>).detail)
+    window.addEventListener('rossi-camera', onCamera)
 
     const resize = () => {
       const w = el.clientWidth, h = el.clientHeight
@@ -122,7 +155,7 @@ export function View3D() {
     const ray = new THREE.Raycaster()
     const ndc = new THREE.Vector2()
     const floor = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0)
-    let drag: { uid: string; off: Pt; moved: boolean } | null = null
+    let drag: { start: Pt; base: Placed[]; moved: boolean } | null = null
     const setNdc = (e: PointerEvent) => {
       const r = renderer.domElement.getBoundingClientRect()
       ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1)
@@ -143,31 +176,32 @@ export function View3D() {
       while (o && !o.userData.uid) o = o.parent
       if (!o) return
       const uid = o.userData.uid as string
-      const m = state.modules.find((x) => x.uid === uid)
       const p = floorPt()
-      if (!m || !p) return
+      if (!p) return
+      state.select(uid, e.shiftKey || e.ctrlKey || e.metaKey)
+      const sel = new Set(useStore.getState().selected)
+      if (!sel.has(uid)) return
       controls.enabled = false
-      state.set({ selected: uid })
-      useStore.setState((st) => ({ past: [...st.past.slice(-60), { room: st.room, wallHeight: st.wallHeight, modules: st.modules, armStyle: st.armStyle, fabric: st.fabric }], future: [] }))
-      drag = { uid, off: { x: p.x - m.x, y: p.y - m.y }, moved: false }
+      state.snapshot()
+      drag = { start: p, base: state.modules.filter((x) => sel.has(x.uid)), moved: false }
       renderer.domElement.setPointerCapture(e.pointerId)
     }
     const onMove = (e: PointerEvent) => {
       if (!drag) return
       setNdc(e)
       const p = floorPt()
+      if (!p) return
       const state = useStore.getState()
-      const m = state.modules.find((x) => x.uid === drag!.uid)
-      if (!p || !m) return
-      const r = footprint(m)
-      const others = state.modules.filter((x) => x.uid !== m.uid).map(footprint)
-      const c = snapCenter({ w: r.x1 - r.x0, h: r.y1 - r.y0 }, { x: p.x - drag.off.x, y: p.y - drag.off.y }, others, state.room, 8)
-      state.updateModule(m.uid, { x: Math.round(c.x * 2) / 2, y: Math.round(c.y * 2) / 2 }, false)
+      const ids = new Set(drag.base.map((m) => m.uid))
+      const others = state.modules.filter((x) => !ids.has(x.uid)).map(footprint)
+      const d = snapGroupDelta(drag.base.map(footprint), { x: p.x - drag.start.x, y: p.y - drag.start.y }, others, state.room, 8)
+      const moved = new Map(drag.base.map((m) => [m.uid, { ...m, x: Math.round((m.x + d.x) * 2) / 2, y: Math.round((m.y + d.y) * 2) / 2 }]))
+      state.setModules(state.modules.map((m) => moved.get(m.uid) ?? m), false)
       drag.moved = true
     }
     const onUp = (e: PointerEvent) => {
       if (drag && !drag.moved) useStore.setState((st) => ({ past: st.past.slice(0, -1) }))
-      if (!drag && downAt && Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y) < 4) useStore.getState().set({ selected: null })
+      if (!drag && downAt && Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y) < 4) useStore.getState().clearSelection()
       drag = null
       downAt = null
       controls.enabled = true
@@ -178,6 +212,7 @@ export function View3D() {
     dom.addEventListener('pointerup', onUp)
 
     return () => {
+      window.removeEventListener('rossi-camera', onCamera)
       cancelAnimationFrame(raf)
       ro.disconnect()
       dom.removeEventListener('pointerdown', onDown)
@@ -313,7 +348,7 @@ export function View3D() {
           g.add(edges)
         }
       }
-      if (s.selected === pm.uid) {
+      if (s.selected.includes(pm.uid)) {
         const box = new THREE.Box3Helper(
           new THREE.Box3(new THREE.Vector3((-def.width / 2) * M - 0.01, 0, (-def.depth / 2) * M - 0.01), new THREE.Vector3((def.width / 2) * M + 0.01, def.height * M + 0.01, (def.depth / 2) * M + 0.01)),
           new THREE.Color('#2f6fed'),
@@ -324,5 +359,15 @@ export function View3D() {
     })
   }, [s.modules, s.room, s.armStyle, s.fabric, s.fabricImage, s.selected, sketch])
 
-  return <div className="view3d" ref={host} />
+  return (
+    <>
+      <div className="view3d" ref={host} />
+      <div className="plan-tools">
+        <button onClick={() => requestCamera('corner')} title="Overview from a corner">Overview</button>
+        <button onClick={() => requestCamera('top')} title="Straight down">Top</button>
+        <button onClick={() => requestCamera('eye')} title="Standing in the room, facing the couch">Eye level</button>
+        <button onClick={() => { const c = ctx.current; if (c) { c.renderer.render(c.scene, c.camera); exportCanvas(c.renderer.domElement, 'rossi-3d.png') } }} title="Save this view as an image">Save image</button>
+      </div>
+    </>
+  )
 }

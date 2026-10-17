@@ -1,7 +1,8 @@
-import { useRef } from 'react'
+import { useRef, useState } from 'react'
 import { useStore, moduleIssues, type Design } from '../store'
 import { MODULE_BY_ID, FABRICS, ROSSI } from '../data/modules'
-import { footprint, boundsOf, walls, setWallLength, addNotch, polygonArea, ROOM_PRESETS, isValidRoom } from '../model/geometry'
+import { PRESETS } from '../data/presets'
+import { footprint, boundsOf, walls, setWallLength, addNotch, alignWall, normalizeRoom, polygonArea, ROOM_PRESETS, isValidRoom } from '../model/geometry'
 
 function NumberField({ label, value, onCommit, min = 1, step = 1 }: { label: string; value: number; onCommit: (v: number) => void; min?: number; step?: number }) {
   return (
@@ -26,54 +27,81 @@ function NumberField({ label, value, onCommit, min = 1, step = 1 }: { label: str
   )
 }
 
+function SelectionPanel() {
+  const s = useStore()
+  const issues = moduleIssues(s.modules, s.room)
+  const group = s.modules.filter((m) => s.selected.includes(m.uid))
+  const b = boundsOf(group.map(footprint))!
+  const one = group.length === 1 ? group[0] : null
+  const def = one ? MODULE_BY_ID[one.defId] : null
+  const moveTo = (dx: number, dy: number) => s.nudge(dx, dy)
+  return (
+    <section>
+      {def ? (
+        <>
+          <h2>{def.name}</h2>
+          <p className="sv">{def.nameSv}</p>
+          <table className="specs">
+            <tbody>
+              <tr><td>Width</td><td>{def.width} cm</td></tr>
+              <tr><td>Depth</td><td>{def.depth} cm</td></tr>
+              <tr><td>Height</td><td>{def.height} cm</td></tr>
+              {def.kind !== 'footstool' && <tr><td>Seat height</td><td>{ROSSI.seatHeight} cm</td></tr>}
+              <tr><td>Footprint</td><td>{((def.width * def.depth) / 10000).toFixed(2)} m²</td></tr>
+            </tbody>
+          </table>
+        </>
+      ) : (
+        <>
+          <h2>{group.length} modules selected</h2>
+          <table className="specs">
+            <tbody>
+              <tr><td>Width</td><td>{Math.round(b.x1 - b.x0)} cm</td></tr>
+              <tr><td>Depth</td><td>{Math.round(b.y1 - b.y0)} cm</td></tr>
+            </tbody>
+          </table>
+        </>
+      )}
+      {group.some((m) => issues.has(m.uid)) && <p className="warn">Overlaps another module or a wall.</p>}
+      <div className="row">
+        <NumberField label="Left edge (cm)" value={b.x0} min={-10000} onCommit={(v) => moveTo(v - b.x0, 0)} />
+        <NumberField label="Top edge (cm)" value={b.y0} min={-10000} onCommit={(v) => moveTo(0, v - b.y0)} />
+      </div>
+      <div className="btns">
+        <button onClick={() => s.rotateSelection(-1)} title="Rotate anticlockwise (Shift+R)">⟲ Rotate</button>
+        <button onClick={() => s.rotateSelection(1)} title="Rotate clockwise (R)">⟳ Rotate</button>
+        <button onClick={() => s.mirrorSelection()} title="Swap left and right (M)">⇋ Mirror</button>
+        <button onClick={() => s.duplicateSelection()} title="Duplicate (Ctrl+D)">Duplicate</button>
+        <button className="danger" onClick={() => s.removeSelection()} title="Delete (Del)">Delete</button>
+      </div>
+      {def?.url && <p className="small"><a href={def.url} target="_blank" rel="noreferrer">View on mio.se ↗</a></p>}
+      <p className="hint small">Shift-click to add or remove modules from the selection. Ctrl+A selects the whole couch.</p>
+      <button className="link" onClick={() => s.clearSelection()}>← Back to summary</button>
+    </section>
+  )
+}
+
 function CouchPanel() {
   const s = useStore()
-  const sel = s.modules.find((m) => m.uid === s.selected)
   const issues = moduleIssues(s.modules, s.room)
   const sofa = s.modules.filter((m) => MODULE_BY_ID[m.defId].kind !== 'footstool')
   const b = boundsOf(sofa.map(footprint))
   const seats = sofa.reduce((n, m) => n + MODULE_BY_ID[m.defId].seats, 0)
   const counts = new Map<string, number>()
   s.modules.forEach((m) => counts.set(m.defId, (counts.get(m.defId) ?? 0) + 1))
+  const [copied, setCopied] = useState(false)
 
-  if (sel) {
-    const def = MODULE_BY_ID[sel.defId]
-    const r = footprint(sel)
-    return (
-      <section>
-        <h2>{def.name}</h2>
-        <p className="sv">{def.nameSv}</p>
-        <table className="specs">
-          <tbody>
-            <tr><td>Width</td><td>{def.width} cm</td></tr>
-            <tr><td>Depth</td><td>{def.depth} cm</td></tr>
-            <tr><td>Height</td><td>{def.height} cm</td></tr>
-            {def.kind !== 'footstool' && <tr><td>Seat height</td><td>{ROSSI.seatHeight} cm</td></tr>}
-            <tr><td>Footprint</td><td>{((def.width * def.depth) / 10000).toFixed(2)} m²</td></tr>
-          </tbody>
-        </table>
-        {issues.has(sel.uid) && <p className="warn">Overlaps another module or a wall.</p>}
-        <div className="row">
-          <NumberField label="Left edge (cm)" value={r.x0} min={-10000} onCommit={(v) => s.updateModule(sel.uid, { x: sel.x + (v - r.x0) })} />
-          <NumberField label="Top edge (cm)" value={r.y0} min={-10000} onCommit={(v) => s.updateModule(sel.uid, { y: sel.y + (v - r.y0) })} />
-        </div>
-        <div className="btns">
-          <button onClick={() => s.rotate(sel.uid, -1)} title="Rotate left (Shift+R)">⟲ Rotate</button>
-          <button onClick={() => s.rotate(sel.uid, 1)} title="Rotate right (R)">⟳ Rotate</button>
-          <button onClick={() => s.duplicate(sel.uid)} title="Duplicate (Ctrl+D)">Duplicate</button>
-          <button className="danger" onClick={() => s.removeModule(sel.uid)} title="Delete (Del)">Delete</button>
-        </div>
-        {def.url && <p className="small"><a href={def.url} target="_blank" rel="noreferrer">View on mio.se ↗</a></p>}
-        <button className="link" onClick={() => s.set({ selected: null })}>← Back to summary</button>
-      </section>
-    )
-  }
+  if (s.selected.length) return <SelectionPanel />
+
+  const list = () =>
+    [...counts].map(([id, n]) => `${n} × Rossi ${MODULE_BY_ID[id].nameSv} (${MODULE_BY_ID[id].width}×${MODULE_BY_ID[id].depth} cm)`).join('\n') +
+    `\nArmstöd ${s.armStyle}` + (b ? `\nTotal ${Math.round(b.x1 - b.x0)} × ${Math.round(b.y1 - b.y0)} cm` : '')
 
   return (
     <section>
       <h2>Your couch</h2>
       {s.modules.length === 0 ? (
-        <p className="hint">Add modules from the left. They snap to each other and to walls.</p>
+        <p className="hint">Add modules from the left, or start from one of Mio's ready-made sofas below. Modules snap to each other and to walls.</p>
       ) : (
         <>
           <div className="stats">
@@ -86,10 +114,28 @@ function CouchPanel() {
               <li key={id}><span>{n} ×</span> {MODULE_BY_ID[id].nameSv} <em>{MODULE_BY_ID[id].width}×{MODULE_BY_ID[id].depth}</em></li>
             ))}
           </ul>
+          <div className="btns">
+            <button onClick={() => s.selectAll()}>Select all</button>
+            <button onClick={async () => {
+              try {
+                await navigator.clipboard.writeText(list())
+                setCopied(true)
+                setTimeout(() => setCopied(false), 1500)
+              } catch {
+                alert(list())
+              }
+            }}>{copied ? 'Copied ✓' : 'Copy parts list'}</button>
+          </div>
           {issues.size > 0 && <p className="warn">{issues.size} module{issues.size > 1 ? 's' : ''} overlap or stick through a wall (shown in red).</p>}
         </>
       )}
-      <p className="hint small">Select a module to rotate or delete it. Keys: R rotate · Del delete · arrows nudge (Shift = 10 cm) · Ctrl+Z undo.</p>
+      <h3>Mio's ready-made sofas</h3>
+      <div className="presets">
+        {PRESETS.map((p) => (
+          <button key={p.id} onClick={() => s.addPreset(p.id)} title={p.note ?? ''}>{p.name}</button>
+        ))}
+      </div>
+      <p className="hint small">Keys: R rotate · M mirror · Del delete · arrows nudge (Shift = 10 cm) · Ctrl+A select all · Ctrl+Z undo.</p>
     </section>
   )
 }
@@ -99,8 +145,17 @@ function RoomPanel() {
   const ws = walls(s.room)
   const sel = s.selectedWall !== null ? ws[s.selectedWall] : null
   const tryRoom = (pts: typeof s.room) => {
-    if (isValidRoom(pts)) s.setRoom(pts)
-    else alert('That change would make walls cross. Try a smaller value.')
+    const clean = normalizeRoom(pts)
+    if (isValidRoom(clean)) {
+      s.setRoom(clean)
+      if (clean.length !== s.room.length) s.set({ selectedWall: null })
+    } else alert('That change would make walls cross. Try a smaller value.')
+  }
+  const n = ws.length
+  const canAlign = (off: -2 | 2) => {
+    if (!sel || n <= 4) return false
+    const o = ws[(sel.i + off + n) % n]
+    return (sel.horizontal ? o.a.y : o.a.x) !== (sel.horizontal ? sel.a.y : sel.a.x)
   }
   return (
     <section>
@@ -125,7 +180,13 @@ function RoomPanel() {
             <button onClick={() => tryRoom(addNotch(s.room, sel.i, 60))} title="Split this wall into five, with the middle part pushed into the room">Add notch in</button>
             <button onClick={() => tryRoom(addNotch(s.room, sel.i, -60))} title="Split this wall into five, with the middle part pushed out">Add bay out</button>
           </div>
-          <p className="hint small">Changing a length moves the next wall. Drag a notch flush with its neighbours to remove it.</p>
+          {(canAlign(-2) || canAlign(2)) && (
+            <div className="btns">
+              {canAlign(-2) && <button onClick={() => tryRoom(alignWall(s.room, sel.i, -2))} title="Remove the step before this wall">Line up with wall {((sel.i - 2 + n) % n) + 1}</button>}
+              {canAlign(2) && <button onClick={() => tryRoom(alignWall(s.room, sel.i, 2))} title="Remove the step after this wall">Line up with wall {((sel.i + 2) % n) + 1}</button>}
+            </div>
+          )}
+          <p className="hint small">Changing a length moves the next wall. Lining a wall up with its parallel neighbour removes the step between them.</p>
         </div>
       )}
       <ol className="walls">
