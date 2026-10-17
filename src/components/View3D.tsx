@@ -8,7 +8,7 @@ import { moduleParts, type Part } from '../model/parts'
 import { footprint, walls, snapGroupDelta, pointInPolygon, type Placed, type Pt } from '../model/geometry'
 import { fabricTextures, woodTexture, imageTexture } from '../three/textures'
 import { shade } from '../model/color'
-import { exportCanvas, requestCamera, type CameraView } from '../exportImage'
+import { requestCamera, type CameraView } from '../exportImage'
 
 const WALL_T = 12
 const M = 0.01 // cm -> m
@@ -366,7 +366,12 @@ export function View3D() {
         <button onClick={() => requestCamera('corner')} title="Overview from a corner">Overview</button>
         <button onClick={() => requestCamera('top')} title="Straight down">Top</button>
         <button onClick={() => requestCamera('eye')} title="Standing in the room, facing the couch">Eye level</button>
-        <button onClick={() => { const c = ctx.current; if (c) { c.renderer.render(c.scene, c.camera); exportCanvas(c.renderer.domElement, 'rossi-3d.png') } }} title="Save this view as an image">Save image</button>
+        <button onClick={() => {
+          const c = ctx.current
+          if (!c) return
+          c.renderer.render(c.scene, c.camera)
+          s.set({ exportPreview: { kind: 'image', data: c.renderer.domElement.toDataURL('image/png'), name: 'rossi-3d.png', title: '3D image' } })
+        }} title="Save this view as an image">Save image</button>
       </div>
     </>
   )

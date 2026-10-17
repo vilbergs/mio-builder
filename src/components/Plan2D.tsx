@@ -8,7 +8,7 @@ import {
   type Placed, type Pt, type Rect,
 } from '../model/geometry'
 import { shade } from '../model/color'
-import { exportSvg } from '../exportImage'
+import { svgToPng } from '../exportImage'
 
 const WALL_T = 12
 const gen = rough.generator()
@@ -423,7 +423,10 @@ export function Plan2D() {
       </svg>
       <div className="plan-tools">
         <button onClick={fit} title="Fit room to view">Fit</button>
-        <button onClick={() => svgRef.current && exportSvg(svgRef.current, 'rossi-plan.png')} title="Save the plan as an image">Save image</button>
+        <button onClick={async () => {
+          if (!svgRef.current) return
+          s.set({ exportPreview: { kind: 'image', data: await svgToPng(svgRef.current), name: 'rossi-plan.png', title: 'Plan image' } })
+        }} title="Save the plan as an image">Save image</button>
       </div>
     </div>
   )

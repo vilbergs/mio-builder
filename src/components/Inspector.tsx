@@ -122,7 +122,7 @@ function CouchPanel() {
                 setCopied(true)
                 setTimeout(() => setCopied(false), 1500)
               } catch {
-                alert(list())
+                s.set({ exportPreview: { kind: 'text', data: list(), name: 'rossi-parts.txt', title: 'Parts list' } })
               }
             }}>{copied ? 'Copied ✓' : 'Copy parts list'}</button>
           </div>
@@ -149,7 +149,7 @@ function RoomPanel() {
     if (isValidRoom(clean)) {
       s.setRoom(clean)
       if (clean.length !== s.room.length) s.set({ selectedWall: null })
-    } else alert('That change would make walls cross. Try a smaller value.')
+    } else s.showToast('That change would make walls cross. Try a smaller value.')
   }
   const n = ws.length
   const canAlign = (off: -2 | 2) => {
@@ -239,14 +239,10 @@ function StylePanel() {
 function FilePanel() {
   const s = useStore()
   const file = useRef<HTMLInputElement>(null)
+  const [confirmClear, setConfirmClear] = useState(false)
   const exportJson = () => {
     const d: Design = { room: s.room, wallHeight: s.wallHeight, modules: s.modules, armStyle: s.armStyle, fabric: s.fabric }
-    const url = URL.createObjectURL(new Blob([JSON.stringify(d, null, 2)], { type: 'application/json' }))
-    const a = document.createElement('a')
-    a.href = url
-    a.download = 'rossi-design.json'
-    a.click()
-    URL.revokeObjectURL(url)
+    s.set({ exportPreview: { kind: 'text', data: JSON.stringify(d, null, 2), name: 'rossi-design.json', title: 'Design file' } })
   }
   return (
     <section>
@@ -254,7 +250,14 @@ function FilePanel() {
       <div className="btns">
         <button onClick={exportJson}>Export</button>
         <button onClick={() => file.current?.click()}>Import</button>
-        <button className="danger" onClick={() => { if (confirm('Remove all modules?')) s.commit({ modules: [] }) }}>Clear couch</button>
+        {confirmClear ? (
+          <>
+            <button className="danger solid" onClick={() => { s.commit({ modules: [] }); s.set({ selected: [] }); setConfirmClear(false) }}>Yes, remove all</button>
+            <button onClick={() => setConfirmClear(false)}>Keep</button>
+          </>
+        ) : (
+          <button className="danger" onClick={() => setConfirmClear(true)} disabled={!s.modules.length}>Clear couch</button>
+        )}
       </div>
       <input ref={file} type="file" accept="application/json" hidden onChange={async (e) => {
         const f = e.target.files?.[0]
@@ -264,7 +267,7 @@ function FilePanel() {
           if (!Array.isArray(d.room) || !Array.isArray(d.modules)) throw new Error('bad file')
           s.loadDesign(d)
         } catch {
-          alert('That file is not a Rossi design.')
+          s.showToast('That file is not a Rossi design (expected an exported .json file).')
         }
         e.target.value = ''
       }} />

@@ -11,6 +11,13 @@ export type ViewMode = '2d' | '3d'
 export type Style = 'sketch' | 'real'
 export type EditMode = 'couch' | 'room'
 
+export interface ExportPreview {
+  kind: 'image' | 'text'
+  data: string // data URL for images, plain text otherwise
+  name: string // suggested file name
+  title: string
+}
+
 export interface Design {
   room: Pt[]
   wallHeight: number
@@ -26,10 +33,13 @@ interface State extends Design {
   selected: string[]
   selectedWall: number | null
   fabricImage: string | null
+  toast: string | null
+  exportPreview: ExportPreview | null
   past: Design[]
   future: Design[]
 
   set: (patch: Partial<State>) => void
+  showToast: (msg: string) => void
   commit: (patch: Partial<Design>) => void
   undo: () => void
   redo: () => void
@@ -104,6 +114,7 @@ function freeSpot(s: Design, w: number, h: number, prefer?: Pt): Pt {
   return best ?? prefer ?? { x: (minX + maxX) / 2, y: (minY + maxY) / 2 }
 }
 
+let toastTimer: ReturnType<typeof setTimeout> | undefined
 let counter = Date.now() % 100000
 const uid = () => `m${(counter++).toString(36)}`
 
@@ -115,10 +126,18 @@ export const useStore = create<State>((set, get) => ({
   selected: [],
   selectedWall: null,
   fabricImage: null,
+  toast: null,
+  exportPreview: null,
   past: [],
   future: [],
 
   set: (patch) => set(patch),
+
+  showToast: (msg) => {
+    set({ toast: msg })
+    clearTimeout(toastTimer)
+    toastTimer = setTimeout(() => set({ toast: null }), 3200)
+  },
 
   commit: (patch) => {
     const s = get()

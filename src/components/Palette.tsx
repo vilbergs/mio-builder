@@ -57,6 +57,7 @@ export function Palette() {
         facing the sofa. <a href={SERIES_URL} target="_blank" rel="noreferrer">Rossi at Mio</a> ·{' '}
         <a href={SPEC_URL} target="_blank" rel="noreferrer">spec sheet</a>
       </p>
+      <p className="hint small">Unofficial planning tool, not made by or affiliated with Mio. Check sizes on mio.se before you buy.</p>
     </aside>
   )
 }

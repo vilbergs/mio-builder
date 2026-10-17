@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect } from 'react'
 import { useStore } from './store'
 import { Palette } from './components/Palette'
 import { Inspector } from './components/Inspector'
+import { ExportDialog, Toast } from './components/Overlays'
 import { Plan2D } from './components/Plan2D'
 
 const View3D = lazy(() => import('./components/View3D').then((m) => ({ default: m.View3D })))
@@ -24,6 +25,10 @@ export default function App() {
       const t = e.target as HTMLElement
       if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA') return
       const st = useStore.getState()
+      if (st.exportPreview) {
+        if (e.key === 'Escape') st.set({ exportPreview: null })
+        return
+      }
       const mod = e.ctrlKey || e.metaKey
       if (mod && e.key.toLowerCase() === 'z') {
         e.preventDefault()
@@ -101,6 +106,8 @@ export default function App() {
         </div>
         <Inspector />
       </main>
+      <ExportDialog />
+      <Toast />
     </div>
   )
 }

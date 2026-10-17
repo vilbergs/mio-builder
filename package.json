@@ -8,7 +8,8 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "vitest run",
+    "build:artifact": "tsc -b && vite build --mode artifact && node scripts/inline-artifact.mjs"
   },
   "dependencies": {
     "react": "^19.2.8",
