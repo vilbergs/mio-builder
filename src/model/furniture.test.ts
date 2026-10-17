@@ -1,13 +1,15 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { itemFootprint, type Item } from '../data/furniture'
-import { ROOM_PRESETS, boundsOf, cornerAnchor, footprint } from './geometry'
-import { moduleIssues, placeLayout, useStore, type Design } from '../store'
+import { ROOM_PRESETS, boundsOf, cornerAnchor, footprint, windowSpan } from './geometry'
+import { defaultDesign, moduleIssues, placeLayout, useStore, type Design } from '../store'
 import { CORNER_LAYOUTS } from '../data/presets'
 import { quote } from './pricing'
+import { moduleParts } from './parts'
+import { MODULE_BY_ID } from '../data/modules'
 
 const rect = ROOM_PRESETS.rect.pts // 520 x 420
 
-const item = (patch: Partial<Item>): Item => ({ uid: 'i1', type: 'wardrobe', name: 'Wardrobe', x: 100, y: 100, rot: 0, w: 100, d: 60, h: 200, color: '#eeeeee', ...patch })
+const item = (patch: Partial<Item>): Item => ({ uid: 'i1', type: 'wardrobe', name: 'Wardrobe', x: 100, y: 100, rot: 0, w: 100, d: 60, h: 200, z: 0, color: '#eeeeee', ...patch })
 
 describe('furniture', () => {
   it('swaps width and depth when turned', () => {
@@ -22,6 +24,13 @@ describe('furniture', () => {
     const table = item({ uid: 't', type: 'dining-table', x: 300, y: 200, w: 180, d: 90 })
     const chair = item({ uid: 'c', type: 'chair', x: 300, y: 250, w: 45, d: 52 })
     expect(moduleIssues([], rect, [], [table, chair]).size).toBe(0)
+  })
+
+  it('lets a wall-hung TV hang above a cabinet but not inside it', () => {
+    const cab = item({ uid: 'c', type: 'sideboard', x: 260, y: 397.5, w: 240, d: 45, h: 90 })
+    const tv = item({ uid: 'tv', type: 'tv', x: 260, y: 417, w: 145, d: 6, h: 83, z: 105 })
+    expect(moduleIssues([], rect, [], [cab, tv]).size).toBe(0)
+    expect(moduleIssues([], rect, [], [cab, { ...tv, z: 60 }]).size).toBe(2)
   })
 })
 
@@ -76,6 +85,24 @@ describe('furniture in the store', () => {
   })
 })
 
+describe('default design', () => {
+  it('has nothing overlapping', () => {
+    useStore.getState().loadDesign(JSON.parse(JSON.stringify(defaultDesign)))
+    const st = useStore.getState()
+    expect(st.items.map((it) => it.name)).toEqual(['Cabinet row', 'Chimney', 'Wood stove', 'Ceiling lamp', 'Alcove lamp', ...Array(4).fill('Ceiling spotlight'), '65" TV'])
+    expect(moduleIssues(st.modules, st.room, st.openings, st.items).size).toBe(0)
+  })
+})
+
+describe('windows', () => {
+  it('uses its own sill and height, kept below the ceiling', () => {
+    const w = { id: 'w', kind: 'window' as const, wall: 5, offset: 87, width: 227 }
+    expect(windowSpan({ ...w, sill: 80, height: 123 }, 250)).toEqual({ sill: 80, top: 203 })
+    expect(windowSpan(w, 250)).toEqual({ sill: 90, top: 210 })
+    expect(windowSpan({ ...w, sill: 80, height: 300 }, 250).top).toBe(249)
+  })
+})
+
 describe('corner layouts', () => {
   const alcove = ROOM_PRESETS.alcove.pts
 
@@ -109,5 +136,16 @@ describe('corner layouts', () => {
     expect(st().modules.map((m) => m.defId).sort()).toEqual(['corner', 's2-left', 's2-right'])
     st().undo()
     expect(st().modules).toEqual([])
+  })
+})
+
+describe('chaise armrest', () => {
+  it('stops at a normal seat depth instead of running the full chaise', () => {
+    for (const style of ['A', 'B'] as const) {
+      const arms = moduleParts(MODULE_BY_ID['chaise-left'], style).filter((p) => p.kind === 'arm')
+      expect(arms).toHaveLength(1)
+      expect(arms[0].y1).toBeLessThanOrEqual(112)
+      expect(moduleParts(MODULE_BY_ID['s2-left'], style).find((p) => p.kind === 'arm')!.y1).toBe(arms[0].y1)
+    }
   })
 })

@@ -10,6 +10,7 @@ import {
 } from '../model/geometry'
 import { shade } from '../model/color'
 import { svgToPng } from '../exportImage'
+import { floorDataUrl, FLOOR_TILE } from '../model/floor'
 
 const WALL_T = 12
 const gen = rough.generator()
@@ -358,7 +359,12 @@ export function Plan2D() {
     const parts = itemParts2D(it)
     const line = shade(it.color, -0.45)
     const cx = (r.x0 + r.x1) / 2, cy = (r.y0 + r.y1) / 2
-    const label = Math.min(r.x1 - r.x0, r.y1 - r.y0) > 30 ? it.name : null
+    // Name inside the piece if it fits, turned sideways on long narrow pieces.
+    const fw = r.x1 - r.x0, fh = r.y1 - r.y0
+    const textW = it.name.length * fontSize * 0.9 * 0.56 + 6 * k, textH = fontSize * 0.9 * 1.3
+    const across = textW <= fw && textH <= fh
+    const sideways = !across && textW <= fh && textH <= fw
+    const label = across || sideways ? it.name : null
     return (
       <g key={it.uid} onPointerDown={(e) => startPiece(e, it.uid)} style={{ cursor: s.edit === 'couch' ? 'grab' : 'default' }}>
         {!sketch && !rug && <rect x={r.x0 + 2} y={r.y0 + 3} width={r.x1 - r.x0} height={r.y1 - r.y0} rx={4} fill="rgba(0,0,0,0.18)" filter="url(#soft)" />}
@@ -387,7 +393,8 @@ export function Plan2D() {
             fill="none" stroke="#2f6fed" strokeWidth={2 * k} strokeDasharray={`${6 * k} ${4 * k}`} rx={3} />
         )}
         {(label || (sel && s.selected.length === 1)) && (
-          <text x={cx} y={cy} textAnchor="middle" fontSize={fontSize * 0.9} className="plan-label item-label" pointerEvents="none">
+          <text x={cx} y={cy} textAnchor="middle" fontSize={fontSize * 0.9} className="plan-label item-label" pointerEvents="none"
+            transform={sideways ? `rotate(-90 ${cx} ${cy})` : undefined}>
             {label && <tspan x={cx} dy={sel && s.selected.length === 1 ? '-0.2em' : '0.35em'}>{label}</tspan>}
             {sel && s.selected.length === 1 && <tspan x={cx} dy={label ? '1.2em' : '0.35em'}>{it.w} × {it.d}</tspan>}
           </text>
@@ -455,10 +462,8 @@ export function Plan2D() {
             <rect width="100" height="100" fill="url(#grid10)" />
             <path d="M100 0H0V100" fill="none" stroke={sketch ? '#d2c8b2' : '#d5d1c9'} strokeWidth={0.9} />
           </pattern>
-          <pattern id="planks" width="120" height="18" patternUnits="userSpaceOnUse">
-            <rect width="120" height="18" fill="#c9a77f" />
-            <rect y="0" width="120" height="9" fill="#c4a07a" />
-            <path d="M0 0H120M0 9H120M38 0V9M95 9V18" stroke="#a9845e" strokeWidth="0.5" />
+          <pattern id="planks" width={FLOOR_TILE} height={FLOOR_TILE} patternUnits="userSpaceOnUse">
+            <image href={floorDataUrl()} width={FLOOR_TILE} height={FLOOR_TILE} preserveAspectRatio="none" />
           </pattern>
           {s.fabricImage && (
             <pattern id="fabric-img" width="60" height="60" patternUnits="userSpaceOnUse">
@@ -531,7 +536,7 @@ export function Plan2D() {
         <g opacity={s.edit === 'room' ? 0.45 : 1}>
           {/* Rugs lie under everything; table tops cover the chairs tucked under them. */}
           {(['rug', 'chair'] as const).map((sh) => s.items.filter((it) => shapeOf(it) === sh).map(renderItem))}
-          {s.items.filter((it) => shapeOf(it) !== 'rug' && shapeOf(it) !== 'chair').map(renderItem)}
+          {s.items.filter((it) => shapeOf(it) !== 'rug' && shapeOf(it) !== 'chair').sort((a, b) => a.z - b.z).map(renderItem)}
           {s.modules.map(renderModule)}
         </g>
 

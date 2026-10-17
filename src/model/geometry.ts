@@ -186,7 +186,7 @@ export const ROOM_PRESETS: Record<string, { name: string; pts: Pt[] }> = {
   rect: { name: 'Rectangle', pts: [{ x: 0, y: 0 }, { x: 520, y: 0 }, { x: 520, y: 420 }, { x: 0, y: 420 }] },
   L: { name: 'L-shape', pts: [{ x: 0, y: 0 }, { x: 600, y: 0 }, { x: 600, y: 300 }, { x: 360, y: 300 }, { x: 360, y: 520 }, { x: 0, y: 520 }] },
   U: { name: 'U-shape', pts: [{ x: 0, y: 0 }, { x: 220, y: 0 }, { x: 220, y: 160 }, { x: 460, y: 160 }, { x: 460, y: 0 }, { x: 680, y: 0 }, { x: 680, y: 480 }, { x: 0, y: 480 }] },
-  alcove: { name: 'Alcove', pts: [{ x: 300, y: 0 }, { x: 500, y: 0 }, { x: 500, y: 200 }, { x: 800, y: 200 }, { x: 800, y: 600 }, { x: 0, y: 600 }, { x: 0, y: 200 }, { x: 300, y: 200 }] },
+  alcove: { name: 'Alcove', pts: [{ x: 300, y: 0 }, { x: 560, y: 0 }, { x: 560, y: 200 }, { x: 860, y: 200 }, { x: 860, y: 600 }, { x: 0, y: 600 }, { x: 0, y: 200 }, { x: 300, y: 200 }] },
   T: { name: 'T-shape', pts: [{ x: 0, y: 0 }, { x: 700, y: 0 }, { x: 700, y: 260 }, { x: 500, y: 260 }, { x: 500, y: 560 }, { x: 200, y: 560 }, { x: 200, y: 260 }, { x: 0, y: 260 }] },
 }
 
@@ -353,11 +353,21 @@ export interface Opening {
   wall: number // index of the wall it sits in
   offset: number // cm from the wall's start point to the opening's near edge
   width: number
+  sill?: number // windows: cm from the floor to the bottom of the window
+  height?: number // windows: cm from sill to top
 }
 
 export const OPENING_DEFAULTS = {
   door: { width: 90, top: 210 },
   window: { width: 120, sill: 90, top: 210 },
+}
+
+/** A window's bottom and top above the floor, kept below the ceiling. */
+export function windowSpan(o: Opening, wallHeight: number): { sill: number; top: number } {
+  const d = OPENING_DEFAULTS.window
+  const sill = Math.min(Math.max(0, o.sill ?? d.sill), wallHeight - 20)
+  const top = Math.min(sill + (o.height ?? d.top - d.sill), wallHeight - 1)
+  return { sill, top }
 }
 
 /** Clamp an opening so it fits inside its wall. Returns null if the wall is gone or too short. */

@@ -2,11 +2,12 @@ import { useEffect, useRef } from 'react'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js'
+import { RectAreaLightUniformsLib } from 'three/examples/jsm/lights/RectAreaLightUniformsLib.js'
 import { useStore, moduleIssues, type Design } from '../store'
 import { MODULE_BY_ID } from '../data/modules'
 import { moduleParts, pillowParts, type Part } from '../model/parts'
-import { footprint, walls, pointInPolygon, OPENING_DEFAULTS, type Placed, type Pt } from '../model/geometry'
-import { shapeOf, type Item } from '../data/furniture'
+import { footprint, walls, pointInPolygon, OPENING_DEFAULTS, windowSpan, type Placed, type Pt } from '../model/geometry'
+import { shapeOf, itemFootprint, type Item } from '../data/furniture'
 import { fabricTextures, woodTexture, imageTexture } from '../three/textures'
 import { shade } from '../model/color'
 import { requestCamera, type CameraView } from '../exportImage'
@@ -24,6 +25,9 @@ interface Ctx {
   wallMeshes: { obj: THREE.Object3D; c: THREE.Vector3; n: THREE.Vector3 }[]
   sun: THREE.DirectionalLight
   hemi: THREE.HemisphereLight
+  lights: THREE.Group
+  /** Invisible ceiling and full walls that only cast shadows, so realistic light gets in through the windows alone. */
+  proxies: THREE.Group
 }
 
 function disposeGroup(g: THREE.Group) {
@@ -48,7 +52,7 @@ function outerRing(room: Pt[]): Pt[] {
 }
 
 /** A piece of furniture as simple solids, centred on its footprint with y = 0 on the floor. */
-function buildItem(it: Item, sketch: boolean, bad: boolean): THREE.Group {
+function buildItem(it: Item, sketch: boolean, bad: boolean, env: { wallHeight: number; lit: boolean }): THREE.Group {
   const g = new THREE.Group()
   const w = it.w * M, d = it.d * M, h = it.h * M
   const mat = (tone = 0) => sketch
@@ -116,6 +120,73 @@ function buildItem(it: Item, sketch: boolean, bad: boolean): THREE.Group {
     case 'rug':
       box(w, Math.max(0.005, h), d, 0, 0, 0)
       break
+    case 'pillar':
+      box(w, h, d, 0, 0, 0)
+      break
+    case 'spot': {
+      // Recessed downlight: a trim ring flush with the ceiling, glowing when lit.
+      const y = Math.max(0, (env.wallHeight - it.z) * M - 0.006)
+      const ring = new THREE.Mesh(new THREE.CylinderGeometry(w / 2, w / 2, 0.006, 24), sketch
+        ? new THREE.MeshLambertMaterial({ color: '#fbf9f4' })
+        : new THREE.MeshStandardMaterial({ color: it.color, roughness: 0.4, emissive: new THREE.Color(env.lit ? '#fff0d6' : '#000000'), emissiveIntensity: env.lit ? 1.5 : 0 }))
+      ring.position.y = y
+      g.add(ring)
+      break
+    }
+    case 'lamp': {
+      // Open shade, bulb inside, cord up to a ceiling cup.
+      const shade = new THREE.CylinderGeometry(w * 0.2, w / 2, h, 40, 1, true)
+      shade.scale(1, 1, d / w)
+      const shadeMat = sketch
+        ? new THREE.MeshLambertMaterial({ color: '#fbf9f4', side: THREE.DoubleSide })
+        : new THREE.MeshStandardMaterial({
+          color: it.color, roughness: 0.9, side: THREE.DoubleSide,
+          emissive: new THREE.Color(env.lit ? '#ffc98a' : bad ? '#ff2a1a' : '#000000'), emissiveIntensity: env.lit ? 0.55 : bad ? 0.35 : 0,
+        })
+      const sm = new THREE.Mesh(shade, shadeMat)
+      sm.position.y = h / 2
+      g.add(sm)
+      if (sketch) {
+        const e = new THREE.LineSegments(new THREE.EdgesGeometry(shade, 30), new THREE.LineBasicMaterial({ color: '#2f2e2a' }))
+        e.position.copy(sm.position)
+        g.add(e)
+      }
+      const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.035, 16, 12), new THREE.MeshStandardMaterial({
+        color: '#fff6e5', emissive: new THREE.Color(env.lit ? '#ffe2b0' : '#000000'), emissiveIntensity: env.lit ? 2 : 0,
+      }))
+      bulb.position.y = h * 0.35
+      g.add(bulb)
+      const cord = Math.max(0.01, (env.wallHeight - it.z) * M - h)
+      add(new THREE.CylinderGeometry(0.004, 0.004, cord, 6), 0, h + cord / 2, 0, -0.6)
+      add(new THREE.CylinderGeometry(0.05, 0.05, 0.02, 20), 0, h + cord - 0.01, 0)
+      break
+    }
+    case 'stove': {
+      const r = Math.min(w, d) / 3
+      const body = sketch ? new THREE.BoxGeometry(w, h, d) : new RoundedBoxGeometry(w, h, d, 4, r)
+      add(body, 0, h / 2, 0)
+      // Black front and door glass, standing just proud of the soapstone.
+      const front = (fw: number, fh: number, y: number, color: string, z: number) => {
+        const m = new THREE.Mesh(new THREE.PlaneGeometry(fw, fh), sketch
+          ? new THREE.MeshLambertMaterial({ color: color === '#000000' ? '#e4e1d8' : '#cfc9bb' })
+          : new THREE.MeshStandardMaterial({ color, roughness: color === '#1a1a1a' ? 0.6 : 0.1, metalness: 0.2 }))
+        m.position.set(0, y, d / 2 + z)
+        g.add(m)
+      }
+      front(w * 0.68, h * 0.97, h / 2, '#1a1a1a', 0.002)
+      front(w * 0.5, h * 0.3, h * 0.55, sketch ? '#000000' : '#5a3a22', 0.003)
+      break
+    }
+    case 'tv': {
+      box(w, h, d * 0.6, 0, 0, -d * 0.2)
+      // Screen face, a touch lighter so it reads as glass.
+      const screen = new THREE.Mesh(new THREE.PlaneGeometry(w - 0.012, h - 0.012), sketch
+        ? new THREE.MeshLambertMaterial({ color: '#e4e1d8' })
+        : new THREE.MeshStandardMaterial({ color: '#2a2c31', roughness: 0.15, metalness: 0.3 }))
+      screen.position.set(0, h / 2, d * 0.1 + 0.001)
+      g.add(screen)
+      break
+    }
   }
   return g
 }
@@ -158,8 +229,11 @@ export function View3D() {
 
     const room = new THREE.Group()
     const couch = new THREE.Group()
-    scene.add(room, couch)
-    ctx.current = { renderer, scene, camera, controls, room, couch, wallMeshes: [], sun, hemi }
+    const lights = new THREE.Group()
+    const proxies = new THREE.Group()
+    scene.add(room, couch, lights, proxies)
+    RectAreaLightUniformsLib.init()
+    ctx.current = { renderer, scene, camera, controls, room, couch, wallMeshes: [], sun, hemi, lights, proxies }
 
     // Frame the room.
     const frame = (view: CameraView) => {
@@ -309,11 +383,14 @@ export function View3D() {
     const c = ctx.current
     if (!c) return
     disposeGroup(c.room)
+    disposeGroup(c.proxies)
     c.wallMeshes = []
-    c.scene.background = new THREE.Color(sketch ? '#f7f2e6' : '#e7e3dc')
-    c.hemi.intensity = sketch ? 2.6 : 2.0
-    c.sun.intensity = sketch ? 0.7 : 2.4
-    c.renderer.toneMapping = sketch ? THREE.NoToneMapping : THREE.NeutralToneMapping
+    const proxyMat = new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: false, side: THREE.DoubleSide })
+    const proxy = (geo: THREE.BufferGeometry) => {
+      const m = new THREE.Mesh(geo, proxyMat)
+      m.castShadow = true
+      c.proxies.add(m)
+    }
 
     const floorGeo = new THREE.ShapeGeometry(polyShape(s.room))
     floorGeo.rotateX(-Math.PI / 2)
@@ -349,9 +426,10 @@ export function View3D() {
       const ops = s.openings.filter((o) => o.wall === w.i).sort((a, b) => a.offset - b.offset)
       for (const o of ops) {
         if (o.offset > t) pieces.push([t, o.offset, 0, s.wallHeight])
-        const top = Math.min(OPENING_DEFAULTS[o.kind].top, s.wallHeight - 1)
+        const win = windowSpan(o, s.wallHeight)
+        const top = o.kind === 'window' ? win.top : Math.min(OPENING_DEFAULTS.door.top, s.wallHeight - 1)
         pieces.push([o.offset, o.offset + o.width, top, s.wallHeight])
-        if (o.kind === 'window') pieces.push([o.offset, o.offset + o.width, 0, OPENING_DEFAULTS.window.sill])
+        if (o.kind === 'window') pieces.push([o.offset, o.offset + o.width, 0, win.sill])
         t = o.offset + o.width
       }
       if (t < w.length) pieces.push([t, w.length, 0, s.wallHeight])
@@ -363,6 +441,7 @@ export function View3D() {
         geo.rotateX(-Math.PI / 2)
         geo.translate(0, z0 * M, 0)
         const mesh = new THREE.Mesh(geo, wallMat)
+        proxy(geo.clone())
         mesh.castShadow = !sketch
         mesh.receiveShadow = true
         g.add(mesh)
@@ -373,13 +452,14 @@ export function View3D() {
         const mid = { x: (a.x + b.x) / 2 - w.inward.x * WALL_T / 2, y: (a.y + b.y) / 2 - w.inward.y * WALL_T / 2 }
         const angle = Math.atan2(-(b.y - a.y), b.x - a.x)
         if (o.kind === 'window') {
-          const h = OPENING_DEFAULTS.window.top - OPENING_DEFAULTS.window.sill
+          const { sill: sillAt, top } = windowSpan(o, s.wallHeight)
+          const h = top - sillAt
           const pane = new THREE.Mesh(new THREE.BoxGeometry(o.width * M, h * M, 0.01), glassMat)
-          pane.position.set(mid.x * M, (OPENING_DEFAULTS.window.sill + h / 2) * M, mid.y * M)
+          pane.position.set(mid.x * M, (sillAt + h / 2) * M, mid.y * M)
           pane.rotation.y = angle
           g.add(pane)
           const sill = new THREE.Mesh(new THREE.BoxGeometry((o.width + 6) * M, 0.03, (WALL_T + 6) * M), frameMat)
-          sill.position.set((mid.x + w.inward.x * 3) * M, OPENING_DEFAULTS.window.sill * M + 0.015, (mid.y + w.inward.y * 3) * M)
+          sill.position.set((mid.x + w.inward.x * 3) * M, sillAt * M + 0.015, (mid.y + w.inward.y * 3) * M)
           sill.rotation.y = angle
           g.add(sill)
         } else {
@@ -412,15 +492,109 @@ export function View3D() {
     ring.push(ring[0].clone())
     c.room.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(ring), new THREE.LineBasicMaterial({ color: sketch ? '#3b3a36' : '#8a7a66' })))
 
-    // Shadow camera covering the room.
+    // Ceiling, for the realistic modes.
+    const ceiling = new THREE.ShapeGeometry(polyShape(outer))
+    ceiling.rotateX(-Math.PI / 2)
+    ceiling.translate(0, s.wallHeight * M, 0)
+    proxy(ceiling)
+  }, [s.room, s.openings, s.wallHeight, sketch])
+
+  // ----- lighting: simple, daylight through the windows, or evening with the lamps (and the stove) lit -----
+  const evening = s.lighting === 'evening'
+  const daylight = s.lighting === 'day'
+  useEffect(() => {
+    const c = ctx.current
+    if (!c) return
+    // Spotlight targets live in the group too and have nothing to dispose.
+    c.lights.children.forEach((l) => (l as Partial<THREE.Light>).dispose?.())
+    c.lights.clear()
+    c.proxies.visible = s.lighting !== 'simple'
+    c.scene.background = new THREE.Color(evening ? '#23262e' : sketch ? '#f7f2e6' : '#e7e3dc')
+    c.hemi.color.set(evening ? '#9aa6c4' : '#ffffff')
+    c.hemi.groundColor.set(evening ? '#3a3026' : '#d6d0c6')
+    // In daylight the hemisphere only stands in for light bouncing around the room.
+    c.hemi.intensity = evening ? 0.18 : daylight ? 0.7 : sketch ? 2.6 : 2.0
+    c.sun.intensity = evening ? 0 : daylight ? 4 : sketch ? 0.7 : 2.4
+    c.sun.castShadow = !evening
+    c.renderer.toneMapping = sketch ? THREE.NoToneMapping : THREE.NeutralToneMapping
+    c.renderer.toneMappingExposure = evening ? 1.25 : 1.15
+
     const xs = s.room.map((p) => p.x * M), zs = s.room.map((p) => p.y * M)
     const cx = (Math.min(...xs) + Math.max(...xs)) / 2, cz = (Math.min(...zs) + Math.max(...zs)) / 2
     const span = Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...zs) - Math.min(...zs)) / 2 + 1
-    c.sun.position.set(cx + 2.5, 5, cz + 4)
-    c.sun.target.position.set(cx, 0, cz)
-    Object.assign(c.sun.shadow.camera, { left: -span * 1.6, right: span * 1.6, top: span * 1.6, bottom: -span * 1.6, near: 0.5, far: 20 })
+    const ws = walls(s.room)
+    const windows = s.openings.flatMap((o) => {
+      const w = ws[o.wall]
+      if (o.kind !== 'window' || !w) return []
+      const { sill, top } = windowSpan(o, s.wallHeight)
+      const t = o.offset + o.width / 2
+      const mid = { x: w.a.x + ((w.b.x - w.a.x) / w.length) * t, y: w.a.y + ((w.b.y - w.a.y) / w.length) * t }
+      return [{ o, w, sill, top, mid }]
+    })
+    // The sun shines in through the biggest window, low and from slightly to one side; otherwise it stands high.
+    const big = daylight ? [...windows].sort((a, b) => b.o.width * (b.top - b.sill) - a.o.width * (a.top - a.sill))[0] : undefined
+    if (big) {
+      const n = big.w.inward
+      const along = { x: (big.w.b.x - big.w.a.x) / big.w.length, y: (big.w.b.y - big.w.a.y) / big.w.length }
+      const tx = big.mid.x * M + n.x * 2, tz = big.mid.y * M + n.y * 2
+      c.sun.target.position.set(tx, 0, tz)
+      c.sun.position.set(tx - n.x * 9 + along.x * 3, 6, tz - n.y * 9 + along.y * 3)
+    } else {
+      c.sun.target.position.set(cx, 0, cz)
+      c.sun.position.set(cx + 2.5, 5, cz + 4)
+    }
+    const reach = span * 1.6 + (big ? 4 : 0)
+    Object.assign(c.sun.shadow.camera, { left: -reach, right: reach, top: reach, bottom: -reach, near: 0.5, far: 40 })
     c.sun.shadow.camera.updateProjectionMatrix()
-  }, [s.room, s.openings, s.wallHeight, sketch])
+
+    if (s.lighting === 'simple') return
+    // Soft sky light from every window pane (dim blue dusk in the evening).
+    for (const win of windows) {
+      const h = (win.top - win.sill) * M
+      const l = new THREE.RectAreaLight(evening ? '#5b6b94' : '#e6efff', evening ? 0.6 : 5, win.o.width * M, h)
+      const n = win.w.inward
+      l.position.set((win.mid.x + n.x * 2) * M, ((win.sill + win.top) / 2) * M, (win.mid.y + n.y * 2) * M)
+      l.lookAt(l.position.x + n.x, l.position.y, l.position.z + n.y)
+      c.lights.add(l)
+    }
+    if (!evening) return
+    let shadows = 0
+    let spotShadows = 0
+    for (const it of s.items) {
+      const shape = shapeOf(it)
+      if (shape === 'lamp') {
+        // A warm 2700 K bulb of roughly 800 lm, hanging inside the shade.
+        const l = new THREE.PointLight('#ffcf94', 45, 0, 2)
+        l.position.set(it.x * M, (it.z + it.h * 0.35) * M, it.y * M)
+        // Point-light shadows cost six renders each, so only the first few lamps cast them.
+        if (shadows++ < 3) {
+          l.castShadow = true
+          l.shadow.mapSize.set(1024, 1024)
+          l.shadow.bias = -0.002
+          l.shadow.radius = 4
+        }
+        c.lights.add(l)
+      } else if (shape === 'spot') {
+        // Warm downlight with a 70° beam, mounted in the ceiling whatever its stored height.
+        const l = new THREE.SpotLight('#ffd9a8', 30, 0, 0.62, 0.6, 2)
+        l.position.set(it.x * M, s.wallHeight * M - 0.02, it.y * M)
+        l.target.position.set(it.x * M, 0, it.y * M)
+        if (spotShadows++ < 4) {
+          l.castShadow = true
+          l.shadow.mapSize.set(512, 512)
+          l.shadow.bias = -0.002
+        }
+        c.lights.add(l, l.target)
+      } else if (shape === 'stove') {
+        // Firelight spilling out of the glass door.
+        const r = itemFootprint(it)
+        const front = { 0: [0, 1], 90: [-1, 0], 180: [0, -1], 270: [1, 0] }[it.rot]
+        const l = new THREE.PointLight('#ff8a3d', 4, 4, 2)
+        l.position.set(((r.x0 + r.x1) / 2 + front[0] * (it.d / 2 + 12)) * M, 0.5, ((r.y0 + r.y1) / 2 + front[1] * (it.d / 2 + 12)) * M)
+        c.lights.add(l)
+      }
+    }
+  }, [s.items, s.lighting, s.room, s.openings, s.wallHeight, sketch, evening, daylight])
 
   // ----- couch -----
   const built = useRef<{ sig: string; groups: Map<string, THREE.Group>; parent: THREE.Group } | null>(null)
@@ -430,11 +604,12 @@ export function View3D() {
     const issues = moduleIssues(s.modules, s.room, s.openings, s.items)
     // While dragging only positions change: move the existing meshes instead of rebuilding them.
     const sig = JSON.stringify([
-      s.modules.map((m) => [m.uid, m.defId, m.rot]), s.items.map((it) => [it.uid, it.type, it.rot, it.w, it.d, it.h, it.color]),
-      [...issues], s.selected, s.armStyle, s.fabric, s.fabricImage, s.showPillows, sketch,
+      s.modules.map((m) => [m.uid, m.defId, m.rot]), s.items.map((it) => [it.uid, it.type, it.rot, it.w, it.d, it.h, it.z, it.color]),
+      [...issues], s.selected, s.armStyle, s.fabric, s.fabricImage, s.showPillows, sketch, evening, s.wallHeight,
     ])
     if (built.current?.sig === sig && built.current.parent === c.couch && built.current.groups.size === s.modules.length + s.items.length) {
-      for (const m of [...s.modules, ...s.items]) built.current.groups.get(m.uid)?.position.set(m.x * M, 0, m.y * M)
+      for (const m of s.modules) built.current.groups.get(m.uid)?.position.set(m.x * M, 0, m.y * M)
+      for (const it of s.items) built.current.groups.get(it.uid)?.position.set(it.x * M, it.z * M, it.y * M)
       return
     }
     disposeGroup(c.couch)
@@ -505,9 +680,9 @@ export function View3D() {
       groups.set(pm.uid, g)
     })
     s.items.forEach((it) => {
-      const g = buildItem(it, sketch, issues.has(it.uid))
+      const g = buildItem(it, sketch, issues.has(it.uid), { wallHeight: s.wallHeight, lit: evening })
       g.userData.uid = it.uid
-      g.position.set(it.x * M, 0, it.y * M)
+      g.position.set(it.x * M, it.z * M, it.y * M)
       g.rotation.y = (-it.rot * Math.PI) / 180
       if (s.selected.includes(it.uid)) {
         const box = new THREE.Box3Helper(
@@ -520,12 +695,17 @@ export function View3D() {
       groups.set(it.uid, g)
     })
     built.current = { sig, groups, parent: c.couch }
-  }, [s.modules, s.items, s.room, s.openings, s.showPillows, s.armStyle, s.fabric, s.fabricImage, s.selected, sketch])
+  }, [s.modules, s.items, s.room, s.openings, s.showPillows, s.armStyle, s.fabric, s.fabricImage, s.selected, sketch, evening, s.wallHeight])
 
   return (
     <>
       <div className="view3d" ref={host} />
       <div className="plan-tools">
+        <div className="light-seg" role="group" aria-label="Lighting">
+          {([['simple', 'Simple', 'Even, bright light from above'], ['day', '☀ Daylight', 'Realistic: sun and sky come in through the windows only'], ['evening', '☾ Evening', 'Realistic: dark outside, ceiling lamps and the stove lit']] as const).map(([v, label, title]) => (
+            <button key={v} className={s.lighting === v ? 'on' : ''} onClick={() => s.set({ lighting: v })} title={title}>{label}</button>
+          ))}
+        </div>
         <button onClick={() => requestCamera('corner')} title="Overview from a corner">Overview</button>
         <button onClick={() => requestCamera('top')} title="Straight down">Top</button>
         <button onClick={() => requestCamera('eye')} title="Standing in the room, facing the couch">Eye level</button>

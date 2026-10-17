@@ -1,12 +1,12 @@
 import { useRef, useState } from 'react'
-import { useStore, moduleIssues, selectionBounds, placeLayout, type Design } from '../store'
+import { useStore, moduleIssues, selectionBounds, placeLayout, defaultDesign, type Design } from '../store'
 import { FURNITURE_BY_ID, itemFootprint } from '../data/furniture'
 import { MODULE_BY_ID, FABRICS, ROSSI, FABRIC_GROUPS } from '../data/modules'
 import { quote, currentPrice, saleActive, kr } from '../model/pricing'
 import { PRESETS, CORNER_LAYOUTS } from '../data/presets'
 import { hasPhotos } from '../data/photos'
 import { ModuleImage } from './Palette'
-import { footprint, boundsOf, type Placed, walls, setWallLength, addNotch, alignWall, normalizeRoom, polygonArea, ROOM_PRESETS, isValidRoom } from '../model/geometry'
+import { footprint, boundsOf, type Placed, walls, setWallLength, addNotch, alignWall, normalizeRoom, polygonArea, ROOM_PRESETS, isValidRoom, windowSpan } from '../model/geometry'
 
 const sale = saleActive()
 
@@ -60,6 +60,7 @@ function ItemPanel({ uid }: { uid: string }) {
         <NumberField label="Depth (cm)" value={it.d} onCommit={(v) => resize({ d: v })} />
         <NumberField label="Height (cm)" value={it.h} onCommit={(v) => s.updateItem(uid, { h: v })} />
       </div>
+      <NumberField label="Off the floor (cm)" value={it.z} min={0} onCommit={(v) => s.updateItem(uid, { z: v })} />
       <label className="field colour-field">
         <span>Colour</span>
         <input type="color" key={it.color} defaultValue={it.color} onBlur={(e) => { if (e.target.value !== it.color) s.updateItem(uid, { color: e.target.value }) }}
@@ -76,7 +77,7 @@ function ItemPanel({ uid }: { uid: string }) {
         <button onClick={() => s.duplicateSelection()} title="Duplicate (Ctrl+D)">Duplicate</button>
         <button className="danger" onClick={() => s.removeSelection()} title="Delete (Del)">Delete</button>
       </div>
-      <p className="hint small">The darker edge or the backrest marks the front. Chairs may tuck under tables and rugs go under everything.</p>
+      <p className="hint small">The darker edge or the backrest marks the front. Chairs may tuck under tables, rugs go under everything, and anything raised off the floor (like a wall-hung TV) may sit above other pieces.</p>
       <button className="link" onClick={() => s.clearSelection()}>← Back to summary</button>
     </section>
   )
@@ -338,6 +339,15 @@ function RoomPanel() {
                 <NumberField label="Width (cm)" value={o.width} min={30} onCommit={(v) => s.updateOpening(o.id, { width: v })} />
                 <NumberField label="From wall start (cm)" value={o.offset} min={0} onCommit={(v) => s.updateOpening(o.id, { offset: v })} />
               </div>
+              {o.kind === 'window' && (() => {
+                const span = windowSpan(o, s.wallHeight)
+                return (
+                  <div className="row">
+                    <NumberField label="Off the floor (cm)" value={span.sill} min={0} onCommit={(v) => s.updateOpening(o.id, { sill: v })} />
+                    <NumberField label="Height (cm)" value={span.top - span.sill} min={10} onCommit={(v) => s.updateOpening(o.id, { height: v })} />
+                  </div>
+                )
+              })()}
             </div>
           ))}
           <p className="hint small">Changing a length moves the next wall. Lining a wall up with its parallel neighbour removes the step between them. Distances along a wall count from the corner it starts at (marked ●).</p>
@@ -404,6 +414,7 @@ function FilePanel() {
   const s = useStore()
   const file = useRef<HTMLInputElement>(null)
   const [confirmClear, setConfirmClear] = useState(false)
+  const [confirmReset, setConfirmReset] = useState(false)
   const exportJson = () => {
     const d: Design = { room: s.room, openings: s.openings, wallHeight: s.wallHeight, modules: s.modules, items: s.items, armStyle: s.armStyle, fabric: s.fabric }
     s.set({ exportPreview: { kind: 'text', data: JSON.stringify(d, null, 2), name: 'rossi-design.json', title: 'Design file' } })
@@ -435,7 +446,17 @@ function FilePanel() {
         }
         e.target.value = ''
       }} />
-      <p className="hint small">Your design is saved in this browser automatically.</p>
+      <div className="btns">
+        {confirmReset ? (
+          <>
+            <button className="danger solid" onClick={() => { if (s.loadDesign(defaultDesign)) refit(); setConfirmReset(false) }}>Yes, start over</button>
+            <button onClick={() => setConfirmReset(false)}>Keep mine</button>
+          </>
+        ) : (
+          <button onClick={() => setConfirmReset(true)} title="Replace the room, couch and furniture with the example design">Start over</button>
+        )}
+      </div>
+      <p className="hint small">Your design is saved in this browser automatically. Start over loads the example room again (Ctrl+Z undoes it).</p>
     </section>
   )
 }

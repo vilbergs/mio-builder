@@ -12,6 +12,7 @@ import {
 export type ViewMode = '2d' | '3d'
 export type Style = 'sketch' | 'real'
 export type EditMode = 'couch' | 'room'
+export type Lighting = 'simple' | 'day' | 'evening'
 
 export interface ExportPreview {
   kind: 'image' | 'text'
@@ -33,6 +34,7 @@ export interface Design {
 interface State extends Design {
   view: ViewMode
   style: Style
+  lighting: Lighting
   edit: EditMode
   selected: string[]
   selectedWall: number | null
@@ -82,11 +84,12 @@ let counter = 0
 // Random part keeps ids unique against ones saved in earlier sessions or imported files.
 const uid = () => `m${Math.random().toString(36).slice(2, 8)}${(counter++).toString(36)}`
 
-const defaultDesign: Design = {
+export const defaultDesign: Design = {
   room: ROOM_PRESETS.alcove.pts,
   openings: [
-    { id: 'o1', kind: 'window', wall: 0, offset: 30, width: 140 },
+    { id: 'o1', kind: 'window', wall: 0, offset: 60, width: 140 },
     { id: 'o2', kind: 'door', wall: 4, offset: 40, width: 90 },
+    { id: 'o3', kind: 'window', wall: 5, offset: 87, width: 227, sill: 80, height: 123 },
   ],
   wallHeight: 250,
   modules: [
@@ -94,7 +97,21 @@ const defaultDesign: Design = {
     { uid: 'm1', defId: 'chaise-left', x: 71, y: 295, rot: 0 },
     { uid: 'm2', defId: 's2-right', x: 213, y: 256, rot: 0 },
   ],
-  items: [],
+  items: [
+    { uid: 'i1', type: 'sideboard', name: 'Cabinet row', x: 120, y: 577.5, rot: 180, w: 240, d: 45, h: 90, z: 0, color: '#f4f3ef' },
+    // Free-standing chimney, 435 cm from the west wall and 145 cm from the south wall, short side towards the south.
+    { uid: 'i3', type: 'chimney', name: 'Chimney', x: 457.5, y: 395, rot: 0, w: 45, d: 120, h: 250, z: 0, color: '#f6f5f1' },
+    // Wood stove centred against the chimney's west side, door facing west.
+    { uid: 'i4', type: 'stove', name: 'Wood stove', x: 412, y: 395, rot: 90, w: 47, d: 46, h: 140, z: 0, color: '#8f918c' },
+    // Pendant over the sofa, 140 cm from the main room's north and west walls.
+    { uid: 'i5', type: 'pendant', name: 'Ceiling lamp', x: 140, y: 340, rot: 0, w: 40, d: 40, h: 28, z: 175, color: '#efe9dc' },
+    { uid: 'i6', type: 'pendant', name: 'Alcove lamp', x: 430, y: 100, rot: 0, w: 40, d: 40, h: 28, z: 175, color: '#efe9dc' },
+    // Recessed spotlights over the part of the room east of the chimney.
+    ...[[580, 300], [760, 300], [580, 500], [760, 500]].map(([x, y], i) => ({
+      uid: `s${i + 1}`, type: 'spot', name: 'Ceiling spotlight', x, y, rot: 0 as const, w: 10, d: 10, h: 2, z: 248, color: '#f2f0ec',
+    })),
+    { uid: 'i2', type: 'tv', name: '65" TV', x: 120, y: 597, rot: 180, w: 145, d: 6, h: 83, z: 105, color: '#1c1c1e' },
+  ],
   armStyle: 'B',
   fabric: FABRICS[0].color,
 }
@@ -127,6 +144,7 @@ function cleanItems(items: unknown): Item[] {
       w: size(it.w, def?.width ?? 60),
       d: size(it.d, def?.depth ?? 60),
       h: size(it.h, def?.height ?? 80),
+      z: Number.isFinite(it.z) && it.z >= 0 ? it.z : def?.elevation ?? 0,
       color: /^#[0-9a-f]{6}$/i.test(it.color) ? it.color : def?.color ?? '#cccccc',
     }]
   })
@@ -195,6 +213,7 @@ export const useStore = create<State>((set, get) => ({
   ...loadSaved(),
   view: '2d',
   style: 'real',
+  lighting: 'simple',
   edit: 'couch',
   selected: [],
   selectedWall: null,
@@ -283,7 +302,7 @@ export const useStore = create<State>((set, get) => ({
     const def = FURNITURE_BY_ID[type]
     if (!def) return
     const pos = at ?? freeSpot(s, def.width, def.depth)
-    const it: Item = { uid: uid(), type, name: def.name, x: Math.round(pos.x), y: Math.round(pos.y), rot: 0, w: def.width, d: def.depth, h: def.height, color: def.color }
+    const it: Item = { uid: uid(), type, name: def.name, x: Math.round(pos.x), y: Math.round(pos.y), rot: 0, w: def.width, d: def.depth, h: def.height, z: def.elevation ?? 0, color: def.color }
     get().commit({ items: [...s.items, it] })
     set({ selected: [it.uid], edit: 'couch' })
   },
@@ -418,7 +437,8 @@ export const useStore = create<State>((set, get) => ({
       .map((m) => ({ ...m, uid: uid(), rot: ([0, 90, 180, 270].includes(m.rot) ? m.rot : 0) as Placed['rot'] }))
     const skipped = (Array.isArray(d.modules) ? d.modules.length : 0) - modules.length
     const openings = (Array.isArray(d.openings) ? d.openings : []).flatMap((o) => {
-      const f = o && (o.kind === 'door' || o.kind === 'window') ? fitOpening({ ...o, id: uid() }, room) : null
+      const num = (v: unknown, min: number) => (typeof v === 'number' && Number.isFinite(v) && v >= min ? v : undefined)
+      const f = o && (o.kind === 'door' || o.kind === 'window') ? fitOpening({ ...o, id: uid(), sill: num(o.sill, 0), height: num(o.height, 10) }, room) : null
       return f ? [f] : []
     })
     get().commit({
@@ -452,8 +472,8 @@ useStore.subscribe((s, prev) => {
 export function moduleIssues(modules: Placed[], room: Pt[], openings: Opening[] = [], items: Item[] = []): Set<string> {
   const bad = new Set<string>()
   const pieces = [
-    ...modules.map((m) => ({ uid: m.uid, r: footprint(m), shape: 'module' as const })),
-    ...items.map((it) => ({ uid: it.uid, r: itemFootprint(it), shape: shapeOf(it) })),
+    ...modules.map((m) => ({ uid: m.uid, r: footprint(m), shape: 'module' as const, z0: 0, z1: MODULE_BY_ID[m.defId].height })),
+    ...items.map((it) => ({ uid: it.uid, r: itemFootprint(it), shape: shapeOf(it), z0: it.z, z1: it.z + it.h })),
   ]
   const swings = openings.map((o) => doorSwing(o, room)).filter((r): r is Rect => r !== null)
   pieces.forEach((a, i) => {
@@ -461,7 +481,9 @@ export function moduleIssues(modules: Placed[], room: Pt[], openings: Opening[] 
     if (!rectInsideRoom(a.r, room) || (a.shape !== 'rug' && swings.some((r) => rectsOverlap(r, a.r)))) bad.add(a.uid)
     for (let j = i + 1; j < pieces.length; j++) {
       const b = pieces[j]
-      if (!canOverlap(a.shape, b.shape) && rectsOverlap(a.r, b.r)) {
+      // A TV above a cabinet shares its floor space but not its height.
+      const stacked = a.z1 <= b.z0 || b.z1 <= a.z0
+      if (!stacked && !canOverlap(a.shape, b.shape) && rectsOverlap(a.r, b.r)) {
         bad.add(a.uid)
         bad.add(b.uid)
       }

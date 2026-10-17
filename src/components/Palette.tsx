@@ -21,7 +21,7 @@ function Thumb({ def }: { def: ModuleDef }) {
 }
 
 function FurnitureThumb({ def }: { def: FurnitureDef }) {
-  const it = { uid: '', type: def.id, name: def.name, x: def.width / 2, y: def.depth / 2, rot: 0 as const, w: def.width, d: def.depth, h: def.height, color: def.color }
+  const it = { uid: '', type: def.id, name: def.name, x: def.width / 2, y: def.depth / 2, rot: 0 as const, w: def.width, d: def.depth, h: def.height, z: def.elevation ?? 0, color: def.color }
   const pad = Math.max(def.width, def.depth) * 0.06
   const line = shade(def.color, -0.45)
   return (

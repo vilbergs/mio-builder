@@ -1,3 +1,4 @@
+import { floorCanvas, FLOOR_TILE } from '../model/floor'
 import * as THREE from 'three'
 
 function rand(seed: number) {
@@ -83,41 +84,11 @@ export function woodTexture() {
 }
 
 function makeWood() {
-  const w = 1024
-  const h = 1024
-  const cv = document.createElement('canvas')
-  cv.width = w
-  cv.height = h
-  const c = cv.getContext('2d')!
-  const r = rand(7)
-  const plankH = h / 8
-  for (let row = 0; row < 8; row++) {
-    let x = -r() * 400
-    while (x < w) {
-      const len = 300 + r() * 500
-      const tone = 0.85 + r() * 0.2
-      c.fillStyle = `rgb(${200 * tone}, ${163 * tone}, ${118 * tone})`
-      c.fillRect(x, row * plankH, len, plankH)
-      for (let g = 0; g < 26; g++) {
-        c.strokeStyle = `rgba(110,75,40,${0.05 + r() * 0.08})`
-        c.lineWidth = 1 + r() * 2
-        c.beginPath()
-        const gy = row * plankH + r() * plankH
-        c.moveTo(x, gy)
-        c.bezierCurveTo(x + len / 3, gy + (r() - 0.5) * 10, x + (2 * len) / 3, gy + (r() - 0.5) * 10, x + len, gy)
-        c.stroke()
-      }
-      c.fillStyle = 'rgba(70,45,25,0.55)'
-      c.fillRect(x, row * plankH, 2, plankH)
-      x += len
-    }
-    c.fillStyle = 'rgba(70,45,25,0.5)'
-    c.fillRect(0, row * plankH, w, 2)
-  }
-  const t = new THREE.CanvasTexture(cv)
+  const t = new THREE.CanvasTexture(floorCanvas())
   t.colorSpace = THREE.SRGBColorSpace
   t.wrapS = t.wrapT = THREE.RepeatWrapping
-  t.repeat.set(1 / 1.2, 1 / 1.2)
+  // Floor UVs are in metres.
+  t.repeat.set(100 / FLOOR_TILE, 100 / FLOOR_TILE)
   t.anisotropy = 8
   return t
 }

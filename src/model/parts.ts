@@ -96,11 +96,18 @@ export function moduleParts(def: ModuleDef, armStyle: ArmStyle): Part[] {
   }
 
   parts.push(box('back', sx0, sx1, 0, BACK_FRAME, LEG, BACK_FRAME_TOP, 3))
-  if (left) parts.push(arm(0, A, d, armStyle))
-  if (right) parts.push(arm(w - A, w, d, armStyle))
+  // A chaise's armrest is only as deep as a normal seat; the lounging part runs on past it.
+  const armD = def.kind === 'chaise' ? Math.min(d, ROSSI.depth) : d
+  if (left) parts.push(arm(0, A, armD, armStyle))
+  if (right) parts.push(arm(w - A, w, armD, armStyle))
 
   const seatY0 = BACK_FRAME + BACK_CUSHION
-  if (def.kind === 'chaise' || def.id === 's3-both') {
+  if (def.kind === 'chaise') {
+    parts.push(box('seat', sx0, sx1, seatY0, d, BASE_TOP - 2, SEAT_TOP, 6))
+    // The cushion widens to the full chaise in front of the armrest.
+    if (left) parts.push(box('seat', 0.5, sx0 + 2, armD - (armStyle === 'A' ? 14 : 0), d, BASE_TOP - 2, SEAT_TOP, 6))
+    if (right) parts.push(box('seat', sx1 - 2, w - 0.5, armD - (armStyle === 'A' ? 14 : 0), d, BASE_TOP - 2, SEAT_TOP, 6))
+  } else if (def.id === 's3-both') {
     parts.push(box('seat', sx0, sx1, seatY0, d, BASE_TOP - 2, SEAT_TOP, 6))
   } else {
     parts.push(...cushions('seat', sx0, sx1, seatY0 - 4, d, BASE_TOP - 2, SEAT_TOP, 130, 6))
